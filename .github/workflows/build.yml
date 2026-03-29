@@ -32,12 +32,6 @@ jobs:
           
           pip3 install --upgrade pip 2>/dev/null || true
 
-      # 🔥 修复1：安装Meson1.3.2（必需）
-      - name: 安装 Meson 1.3.2
-        run: |
-          pip3 install meson==1.3.2 ninja
-          meson --version
-
       - name: 修复 Python 头文件路径
         run: python3 -c "import sysconfig; print(sysconfig.get_paths())"
 
@@ -72,28 +66,6 @@ jobs:
           cd frida
           sed -i 's/^\(.*subproject.*frida-python.*\)$/#\1/' meson.build || true
 
-      # 🔥 修复2：强制替换Frida内置Meson（必需，否则用旧版Meson炸）
-      - name: 强制替换内置 Meson 为 1.3.2
-        run: |
-          cd frida
-          rm -rf releng/meson
-          mkdir -p releng/meson
-          ln -s "$(which meson)" releng/meson/meson.py
-          python3 releng/meson/meson.py --version
-
-      # 🔥 修复3：Python稳修meson.build语法（解决sed报错，不碰任何混淆逻辑）
-      - name: 修复 meson.build 语法
-        run: |
-          cd frida
-          python3 << 'EOF'
-import re
-with open("meson.build","r+") as f:
-    data = f.read()
-    data = re.sub(r'project\s*\([^\)]*\)',"project('frida','c',version: '16.5.6')",data,count=1)
-    f.seek(0);f.truncate();f.write(data)
-EOF
-
-      # ====================== 以下完全是你原版代码，一字未改 ======================
       - name: 【第一层】源码级混淆 - 数据结构与函数名混淆
         run: |
           cd frida
