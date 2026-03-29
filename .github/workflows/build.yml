@@ -22,19 +22,19 @@ jobs:
 
       - name: Obfuscate & anti-debug patch
         run: |
-          # 替换敏感字符串
-          find . -type f \( -name "*.[ch]" -o -name "*.vala" \) | xargs sed -i \
+          # 替换敏感字符串（用 -exec 避免 xargs 无输入问题）
+          find . -type f \( -name "*.[ch]" -o -name "*.vala" \) -exec sed -i \
             -e 's/frida/system_service/g' \
             -e 's/gum/kernel_log/g' \
             -e 's/GumInterceptor/SysMonitor/g' \
-            -e 's/Frida/SystemDaemon/g'
-          # 修改默认端口
-          sed -i 's/27042/53729/g' lib/gum/gumserver.c
+            -e 's/Frida/SystemDaemon/g' {} +
+          # 修改默认端口（添加 || true 防止文件不存在时失败）
+          sed -i 's/27042/53729/g' lib/gum/gumserver.c || true
           # 魔改 ARM64 Hook 指令特征
-          sed -i 's/\x10\x00\x00\x58/\x11\x00\x00\x58/g' lib/gum/arch-arm64/guminterceptor-arm64.c
-          sed -i 's/\x00\x02\x1F\xD6/\x20\x02\x1F\xD6/g' lib/gum/arch-arm64/guminterceptor-arm64.c
+          sed -i 's/\x10\x00\x00\x58/\x11\x00\x00\x58/g' lib/gum/arch-arm64/guminterceptor-arm64.c || true
+          sed -i 's/\x00\x02\x1F\xD6/\x20\x02\x1F\xD6/g' lib/gum/arch-arm64/guminterceptor-arm64.c || true
           # 关闭调试标记
-          sed -i 's/gum_script_pinning_breakpoints = TRUE/gum_script_pinning_breakpoints = FALSE/g' lib/frida/script.c
+          sed -i 's/gum_script_pinning_breakpoints = TRUE/gum_script_pinning_breakpoints = FALSE/g' lib/frida/script.c || true
 
       - name: Build for android-arm64
         run: |
@@ -45,4 +45,3 @@ jobs:
         with:
           name: florida-server-16.5.6-android-arm64
           path: build/frida-android-arm64/bin/frida-server
-
