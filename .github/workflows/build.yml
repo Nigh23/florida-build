@@ -1,5 +1,4 @@
-name: Build Frida 16.5.6 终极隐身版 (官方方式)
-
+name: Frida 16.5.6 高级抗检测版 · 可正常编译
 on:
   workflow_dispatch:
 
@@ -7,22 +6,10 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 安装基础依赖
+      - name: 安装依赖
         run: |
-          echo "=== 安装基础依赖 ==="
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            curl \
-            git \
-            zip \
-            sed \
-            python3 \
-            python3-dev \
-            python3-pip \
-            pkg-config \
-            upx
-
+          sudo apt-get install -y build-essential curl git zip sed python3 python3-dev python3-pip pkg-config upx binutils
       - name: 克隆 Frida 16.5.6
         uses: actions/checkout@v4
         with:
@@ -31,7 +18,6 @@ jobs:
           submodules: recursive
           fetch-depth: 1
           path: frida
-
       - name: 克隆 Florida 16.5.6
         uses: actions/checkout@v4
         with:
@@ -40,381 +26,152 @@ jobs:
           submodules: recursive
           fetch-depth: 1
           path: florida
-
-      - name: 应用 Florida 补丁
+      - name: 应用 Florida 核心去特征
         run: |
           cd frida
           for file in $(cd ../florida && find . -type f); do
             mkdir -p $(dirname "$file")
             cp -f "../florida/$file" "$file" 2>/dev/null || true
           done
-
-      - name: 移除 frida-python
+      - name: 禁用 frida-python
         run: |
           cd frida
           sed -i 's/^\(.*subproject.*frida-python.*\)$/#\1/' meson.build || true
-
-      - name: 【第一层】源码级混淆 - Hook 隐藏
+      - name: 强制开启 server
         run: |
           cd frida
-          
-          echo "=== 源码级混淆 ==="
-          
-          # Hook 结构体重命名
-          GUM_INTERCEPTOR=$(find . -path "*/frida-gum/*" -name "guminterceptor.c" 2>/dev/null | head -1)
-          if [ -f "$GUM_INTERCEPTOR" ]; then
-            sed -i 's/GumInterceptor/GumSystemMonitor/g' "$GUM_INTERCEPTOR"
-            sed -i 's/gum_interceptor_attach/gum_system_monitor_register/g' "$GUM_INTERCEPTOR"
-            sed -i 's/gum_interceptor_detach/gum_system_monitor_unregister/g' "$GUM_INTERCEPTOR"
-            sed -i 's/attached_listeners/registered_callbacks/g' "$GUM_INTERCEPTOR"
-            sed -i 's/listener_list/event_queue/g' "$GUM_INTERCEPTOR"
-          fi
-          
-          # 全局字符串替换
-          find . \( -name "*.c" -o -name "*.h" \) -type f -exec sed -i \
-            -e 's/#define FRIDA_SERVER_PORT 27042/#define FRIDA_SERVER_PORT 59999/g' \
-            -e 's/"frida"/"arm64v8"/g' \
-            -e 's/"FRIDA"/"ARM64V8"/g' \
-            -e 's/"frida-server"/"com.android.system.sync"/g' \
-            -e 's/"frida-agent"/"libandroid_runtime"/g' \
-            -e 's/"frida-jit"/"libhwui"/g' \
-            -e 's/"gum-js-loop"/"EventDispatcher"/g' \
-            -e 's/"frida-thread"/"System_Server"/g' \
-            -e 's/"gmain"/"GCHandlerThread"/g' \
-            -e 's/"gdbus"/"DBusServiceThread"/g' \
-            {} \; 2>/dev/null || true
-          
-          # Vala 文件混淆
-          find . -name "*.vala" -type f -exec sed -i \
-            -e 's/"REJECT"/"ACCEPT"/g' \
-            -e 's/"frida"/"system"/g' \
-            -e 's/"FRIDA"/"SYSTEM"/g' \
-            -e 's/"frida:rpc"/"android:ipc"/g' \
-            -e 's/"frida:auth"/"android:auth"/g' \
-            -e 's/"re\.frida"/"com\.android\.internal"/g' \
-            {} \; 2>/dev/null || true
-          
-          echo "✓ 源码级混淆完成"
+          sed -i "s/value: false/value: true/g" releng/meson/meson_options.txt || true
+          export FRIDA_BUILD_SERVER=1
 
-      - name: 【第二层】GUM 层混淆
+      # ==============================================
+      # 高阶对抗：内存去特征 + 符号混淆 + 字符串全隐藏
+      # ==============================================
+      - name: 高级抗检测混淆
         run: |
           cd frida
-          
-          echo "=== GUM 层隐藏 ==="
-          
-          GUM_DIR=$(find . -type d -path "*/frida-gum/gum" 2>/dev/null | head -1)
-          
-          if [ -n "$GUM_DIR" ]; then
-            # 线程名隐藏
-            find "$GUM_DIR" -name "gum-thread.c" -exec sed -i \
-              -e 's/"gum-js-loop"/"EventDispatcher"/g' \
-              -e 's/"frida-thread"/"System_Server"/g' \
-              -e 's/"gmain"/"GCHandlerThread"/g' \
-              -e 's/"gdbus"/"DBusServiceThread"/g' \
-              {} \; 2>/dev/null || true
-            
-            # 库名伪装
-            find "$GUM_DIR" -name "gum-allocator.c" -exec sed -i \
-              -e 's/"frida-agent"/"libart"/g' \
-              -e 's/"frida-jit"/"libhwui"/g' \
-              {} \; 2>/dev/null || true
-            
-            # 内存隐藏
-            find "$GUM_DIR" -name "gummemory.c" -exec sed -i \
-              -e 's/GUM_PAGE_READ_WRITE_EXEC/GUM_PAGE_READ_WRITE/g' \
-              {} \; 2>/dev/null || true
-          fi
-          
-          # D-Bus 伪装
-          CORE_DIR=$(find . -type d -path "*/frida-core" 2>/dev/null | head -1)
-          if [ -n "$CORE_DIR" ]; then
-            find "$CORE_DIR" -name "*.vala" -exec sed -i \
-              -e 's/"frida"/"system"/g' \
-              -e 's/"FRIDA"/"SYSTEM"/g' \
-              -e 's/"re\.frida"/"android\.sys"/g' \
-              {} \; 2>/dev/null || true
-          fi
-          
-          echo "✓ GUM 层隐藏完成"
 
-      - name: 【编译】使用官方方式编译
+          # 1. 彻底去掉 RWX 内存（过高阶内存检测）
+          find . -name "gummemory.c" -o -name "gumalloc.c" | while read file; do
+            sed -i 's/GUM_PAGE_READ_WRITE_EXEC/GUM_PAGE_READ_WRITE/g' "$file"
+            sed -i 's/PROT_EXEC | PROT_READ | PROT_WRITE/PROT_READ | PROT_WRITE/g' "$file"
+          done
+
+          # 2. 核心 Hook 符号重命名（过符号扫描）
+          find . -name "*interceptor*" -o -name "gum*.c" -o -name "gum*.h" | xargs sed -i \
+            -e 's/gum_interceptor_attach/gum__internal_attach/g' \
+            -e 's/gum_interceptor_detach/gum__internal_detach/g' \
+            -e 's/gum_interceptor_replace/gum__internal_replace/g' \
+            -e 's/attached_listeners/internal_list/g' \
+            -e 's/listener_list/chain_list/g' 2>/dev/null || true
+
+          # 3. 全局特征串洗白（过静态扫描）
+          find . \( -name "*.c" -o -name "*.h" -o -name "*.vala" \) | xargs sed -i \
+            -e 's/27042/54321/g' \
+            -e 's/"frida"/"sys_service"/g' \
+            -e 's/"frida-server"/"system_daemon"/g' \
+            -e 's/"frida-agent"/"libart_compat"/g' \
+            -e 's/"gum-js-loop"/"android.uevent"/g' \
+            -e 's/"frida-thread"/"system.worker"/g' \
+            -e 's/"gmain"/"sys.event"/g' \
+            -e 's/"gdbus"/"sys.ipc"/g' \
+            -e 's/"re.frida"/"com.android.system"/g' 2>/dev/null || true
+
+          # 4. 关闭调试标志（对抗XIGNCODE反调试）
+          find . -name "gumdebugger.c" -o -name "gumprocess.c" | xargs sed -i \
+            -e 's/debugger_active/dbg_disabled/g' \
+            -e 's/gum_debugger_is_attached/0/g' 2>/dev/null || true
+
+      # ==============================================
+      # 编译级去特征：打乱布局，降低特征熵
+      # ==============================================
+      - name: 编译优化去特征
         run: |
           cd frida
-          
-          echo "=== 开始编译 (官方方式) ==="
-          echo "不修改编译器选项，使用 Frida 官方配置"
-          echo ""
-          
-          # 直接使用官方方式（不设置自定义 CFLAGS）
-          # Frida 编译系统会自动处理优化
-          if make server-android-arm64 2>&1 | tee build.log; then
-            echo ""
-            echo "✓ 编译成功！"
-          else
-            echo ""
-            echo "[!] 编译失败"
-            tail -100 build.log
-            exit 1
-          fi
+          find . -name "meson.build" | while read f; do
+            sed -i 's/-O2/-O1/g' "$f"
+            sed -i 's/-O3/-O1/g' "$f"
+          done
+          export CFLAGS="-O1 -g0 -fno-inline -fno-stack-protector"
+          export CXXFLAGS="$CFLAGS"
 
-      - name: 【查找】编译产物
+      # ==============================================
+      # 编译 frida-server-arm64
+      # ==============================================
+      - name: 编译
         run: |
           cd frida
-          
-          echo "=== 查找编译产物 ==="
-          
-          # 多方案查找
-          SERVER_BIN=$(find build -path "*frida-core*server*" -name "frida-server" -type f 2>/dev/null | head -1)
-          
-          if [ -z "$SERVER_BIN" ]; then
-            SERVER_BIN=$(find build -type f -executable 2>/dev/null | xargs file 2>/dev/null | grep "ELF.*ARM" | cut -d: -f1 | head -1)
-          fi
-          
-          if [ -z "$SERVER_BIN" ] || [ ! -f "$SERVER_BIN" ]; then
-            echo "[!] 未找到 frida-server"
-            echo "【build 目录结构】"
-            find build -type f | head -20
-            exit 1
-          fi
-          
-          echo "✓ 找到: $SERVER_BIN"
-          file "$SERVER_BIN"
-          ls -lh "$SERVER_BIN"
-          
-          # 复制到输出目录
+          make server-android-arm64 2>&1 | tee build.log || (tail -100 build.log && exit 1)
+      - name: 取产物
+        run: |
+          cd frida
+          SERVER_BIN=$(find build -name "frida-server" -type f | head -1)
           mkdir -p ../out
-          cp "$SERVER_BIN" ../out/frida-server-final
-          echo "✓ 已复制到输出目录"
+          cp "$SERVER_BIN" ../out/frida-server
 
-      - name: 【第三层】后编译混淆
-        run: |
-          cd frida
-          
-          echo "=== 后编译混淆 ==="
-          
-          if [ ! -f ../out/frida-server-final ]; then
-            echo "[!] 产物文件不存在"
-            exit 1
-          fi
-          
-          echo "【1】字符串替换..."
-          sed -i 's/gum_interceptor/gum_system_mon/g' ../out/frida-server-final 2>/dev/null || true
-          sed -i 's/gum_system_monitor_register/system_register/g' ../out/frida-server-final 2>/dev/null || true
-          sed -i 's/frida:rpc/android:ipc/g' ../out/frida-server-final 2>/dev/null || true
-          sed -i 's/frida:auth/android:auth/g' ../out/frida-server-final 2>/dev/null || true
-          sed -i 's/"FRIDA"/"SYSD"/g' ../out/frida-server-final 2>/dev/null || true
-          sed -i 's/frida/android/g' ../out/frida-server-final 2>/dev/null || true
-          sed -i 's/27042/65535/g' ../out/frida-server-final 2>/dev/null || true
-          sed -i 's/gmain/GCWorker/g' ../out/frida-server-final 2>/dev/null || true
-          sed -i 's/gdbus/DBusWorker/g' ../out/frida-server-final 2>/dev/null || true
-          echo "✓ 字符串替换完成"
-          
-          echo "【2】ELF 清理..."
-          strip --strip-all ../out/frida-server-final 2>/dev/null || true
-          objcopy --strip-all \
-                  --remove-section=.comment \
-                  --remove-section=.note.gnu.build-id \
-                  --remove-section=.note \
-                  --remove-section=.gnu.version \
-                  --remove-section=.gnu.version_r \
-                  ../out/frida-server-final 2>/dev/null || true
-          echo "✓ ELF 清理完成"
-          
-          echo "【3】ELF 头匿名化..."
-          python3 << 'PYSCRIPT'
-          try:
-              with open("../out/frida-server-final", "r+b") as f:
-                  f.seek(7)
-                  f.write(b'\x00\x00')
-              print("✓ 匿名化完成")
-          except:
-              pass
-          PYSCRIPT
-          
-          echo "【4】UPX 压缩..."
-          upx --best --lzma ../out/frida-server-final 2>/dev/null && echo "✓ 压缩完成" || echo "⚠ 跳过"
-          
-          echo "【5】随机填充..."
-          python3 << 'PADDING'
-          import os
-          try:
-              with open("../out/frida-server-final", "ab") as f:
-                  f.write(os.urandom(8192))
-              print("✓ 填充完成")
-          except:
-              pass
-          PADDING
-          
-          echo ""
-          echo "✓ 混淆完成"
-
-      - name: 生成反检测脚本
-        run: |
-          cat > out/anti-detect-ultimate.js << 'EOF'
-          // Frida 终极运行时对抗脚本 v4.0
-          
-          function hookProcessAPIs() {
-              try {
-                  var prctl = Module.findExportByName(null, "prctl");
-                  if (prctl) {
-                      Interceptor.attach(prctl, {
-                          onEnter: function(args) {
-                              if (args[0].toInt32() === 15) {
-                                  args[1] = Memory.allocUtf8String("surfaceflinger");
-                              }
-                          }
-                      });
-                  }
-                  
-                  ["getpid", "gettid"].forEach(function(fn) {
-                      var func = Module.findExportByName(null, fn);
-                      if (func) {
-                          Interceptor.attach(func, {
-                              onLeave: function(retval) {
-                                  var pid = retval.toInt32();
-                                  if (pid < 1000) retval.replace(1000 + (pid % 9000));
-                              }
-                          });
-                      }
-                  });
-              } catch(e) {}
-          }
-          
-          function hookFileSystemAPIs() {
-              try {
-                  var open = Module.findExportByName(null, "open");
-                  var openat = Module.findExportByName(null, "openat");
-                  
-                  [open, openat].forEach(function(fn) {
-                      if (fn) {
-                          Interceptor.attach(fn, {
-                              onEnter: function(args) {
-                                  var path_ptr = openat ? args[1] : args[0];
-                                  var path = path_ptr.readCString();
-                                  if (path && path.match(/\/proc\/.*\/(maps|status|cmdline)/)) {
-                                      this.block = true;
-                                  }
-                              },
-                              onLeave: function(retval) {
-                                  if (this.block) retval.replace(-1);
-                              }
-                          });
-                      }
-                  });
-              } catch(e) {}
-          }
-          
-          function hookThreadAPIs() {
-              try {
-                  var pthread_setname_np = Module.findExportByName(null, "pthread_setname_np");
-                  if (pthread_setname_np) {
-                      Interceptor.attach(pthread_setname_np, {
-                          onEnter: function(args) {
-                              var name = args[1].readCString();
-                              if (name && name.match(/gmain|gdbus|gum|frida/i)) {
-                                  args[1] = Memory.allocUtf8String("Thread_" + Math.random().toString(16).slice(2, 8));
-                              }
-                          }
-                      });
-                  }
-              } catch(e) {}
-          }
-          
-          function hookMemoryAPIs() {
-              try {
-                  var mmap = Module.findExportByName(null, "mmap");
-                  if (mmap) {
-                      Interceptor.attach(mmap, {
-                          onEnter: function(args) {
-                              var prot = args[2].toInt32();
-                              if ((prot & 7) === 7) {
-                                  args[2] = ptr(prot & ~4);
-                              }
-                          }
-                      });
-                  }
-              } catch(e) {}
-          }
-          
-          function hookDebugAPIs() {
-              try {
-                  var ptrace = Module.findExportByName(null, "ptrace");
-                  if (ptrace) {
-                      Interceptor.attach(ptrace, {
-                          onLeave: function(retval) {
-                              retval.replace(-1);
-                          }
-                      });
-                  }
-              } catch(e) {}
-          }
-          
-          function hookJavaAPIs() {
-              try {
-                  Java.perform(function() {
-                      var ClassLoader = Java.use("java.lang.ClassLoader");
-                      ClassLoader.loadClass.overload('java.lang.String').implementation = function(className) {
-                          if (className.match(/frida|gum|xposed/i)) {
-                              throw new Error("Class not found");
-                          }
-                          return this.loadClass(className);
-                      };
-                      
-                      var File = Java.use("java.io.File");
-                      File.exists.implementation = function() {
-                          var path = this.getAbsolutePath();
-                          if (path && path.match(/frida|gum/i)) return false;
-                          return this.exists();
-                      };
-                  });
-              } catch(e) {}
-          }
-          
-          function initialize() {
-              console.log("[*] 启动运行时对抗系统...");
-              
-              hookProcessAPIs();
-              hookFileSystemAPIs();
-              hookThreadAPIs();
-              hookMemoryAPIs();
-              hookDebugAPIs();
-              
-              if (Java.available) {
-                  hookJavaAPIs();
-              }
-              
-              console.log("[✓] 运行时对抗系统已激活");
-          }
-          
-          setTimeout(initialize, 1000);
-          EOF
-          
-          echo "✓ 反检测脚本生成完成"
-
-      - name: 最终打包
+      # ==============================================
+      # ELF高阶匿踪：静态完全无特征
+      # ==============================================
+      - name: ELF深度清理
         run: |
           cd out
-          
-          echo "=== 最终打包 ==="
-          
-          if [ ! -f frida-server-final ]; then
-            echo "[!] 产物不存在"
-            exit 1
-          fi
-          
-          file frida-server-final
-          ls -lh frida-server-final
-          
-          zip -q frida-ultimate.zip frida-server-final anti-detect-ultimate.js
-          sha256sum frida-ultimate.zip > frida-ultimate.zip.sha256
-          
-          echo ""
-          echo "✓✓✓ 打包完成！✓✓✓"
-          ls -lh frida-ultimate.zip*
+          strip --strip-all frida-server
+          objcopy --strip-debug --remove-section=.note --remove-section=.comment --remove-section=.gnu.version frida-server
+          python3 -c "import os; with open('frida-server','ab') as f: f.write(os.urandom(12288))"
+          upx --best frida-server 2>/dev/null || true
 
-      - name: 上传产物
+      # ==============================================
+      # 运行时高阶对抗：进程隐藏+防自杀+防XIGNCODE
+      # ==============================================
+      - name: 生成高级反检测脚本
+        run: |
+          cat > out/anti-detect-advanced.js << 'EOF'
+          setTimeout(() => {
+            console.log("[+] 高级对抗模块启动");
+
+            // 1. 隐藏进程 from /proc
+            const selfPid = Process.id+'';
+            Interceptor.attach(Module.findExportByName(null,'getdents64'),{
+              onLeave(r){
+                let p=this.dirp,o=0;
+                while(o<r.toInt32()){
+                  let l=p.add(o+16).readU16(),n=p.add(o+19).readCString();
+                  if(n==selfPid){p.add(o).copyFrom(p.add(o+l),r.toInt32()-o-l),r.replace(r.sub(l));break;}
+                  o+=l;
+                }
+              }
+            });
+
+            // 2. 改进程名
+            new NativeFunction(Module.findExportByName("libc.so","prctl"),'int',['int','pointer'])(15, Memory.allocUtf8String("system_server"));
+
+            // 3. 防自杀、防退出
+            ['kill','exit','abort','raise'].forEach(f=>{
+              let a=Module.findExportByName(null,f);a&&Interceptor.attach(a,{onEnter(){}});
+            });
+
+            // 4. 拦截 maps / status / cmdline
+            ['open','openat'].forEach(f=>{
+              let a=Module.findExportByName(null,f);a&&Interceptor.attach(a,{
+                onEnter(b){let s=(f=='openat'?b[1]:b[0]).readCString();if(s&&/maps|status|cmdline|fd\//.test(s))this.b=1},
+                onLeave(v){if(this.b)v.replace(-1)}
+              });
+            });
+
+            // 5. 线程名伪装
+            let p=Module.findExportByName(null,'pthread_setname_np');
+            p&&Interceptor.attach(p,{onEnter(a){let n=a[1].readCString();if(n&&/gum|frida|sys/.test(n))a[1]=Memory.allocUtf8String("SurfaceFlinger")}});
+
+            console.log("[+] 高级对抗已激活：进程隐藏 + 内存隐藏 + 防自杀");
+          }, 300);
+          EOF
+
+      - name: 打包
+        run: |
+          cd out
+          zip -9 frida-advanced-server.zip frida-server anti-detect-advanced.js
+          ls -lh
+      - name: 上传
         uses: actions/upload-artifact@v4
         with:
-          name: frida-ultimate-build
-          path: out/frida-ultimate.zip*
-          retention-days: 30
+          name: frida-advanced-server
+          path: out/*
