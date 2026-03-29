@@ -1,4 +1,4 @@
-name: Build Frida 16.5.6 终极隐身版 (修复版)
+name: Build Frida 16.5.6 终极隐身版 (语法修复版)
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 安装完整编译依赖
+      - name: 安装编译依赖
         run: |
           sudo dpkg --add-architecture i386
           sudo apt update
@@ -22,30 +22,28 @@ jobs:
           submodules: recursive
           path: frida
 
-      - name: 克隆 Florida 16.5.6 并合并
+      - name: 克隆 Florida 并集成
         run: |
           git clone --recursive --depth 1 -b 16.5.6 https://github.com/Ylarod/Florida florida
           cp -rvf florida/* frida/ || true
 
-      - name: 【第一层至第四层】源码混淆 (保持原逻辑, 仅保护编译引擎)
+      - name: 【第一层至第三层】源码混淆 (保持原逻辑, 限制范围)
         run: |
           cd frida
+          # 仅针对源码目录混淆，避开编译脚本目录 releng，防止破坏编译命令
+          TARGET_DIRS="frida-gum frida-core server src"
           
-          # 【重要修复】定义需要混淆的源码目录，避开 releng (编译系统) 和 build 目录
-          # 否则编译系统会因为变量名被改而崩溃
-          SRC_TARGETS="frida-gum frida-core server src"
-
-          # 1. 隐藏 Hook 数据结构 (你的原逻辑)
-          GUM_INTERCEPTOR=$(find frida-gum -name "guminterceptor.c" | head -1)
-          if [ -f "$GUM_INTERCEPTOR" ]; then
-            sed -i 's/struct.*_GumInterceptor/struct _GumSystemMonitor/g' "$GUM_INTERCEPTOR"
-            sed -i 's/GumInterceptor/GumSystemMonitor/g' "$GUM_INTERCEPTOR"
-            sed -i 's/attached_listeners/registered_callbacks/g' "$GUM_INTERCEPTOR"
-            sed -i 's/gum_interceptor_attach/gum_system_monitor_register/g' "$GUM_INTERCEPTOR"
+          # 1. 隐藏 Hook 数据结构
+          G_INTER=$(find frida-gum -name "guminterceptor.c" | head -1)
+          if [ -f "$G_INTER" ]; then
+            sed -i 's/struct.*_GumInterceptor/struct _GumSystemMonitor/g' "$G_INTER"
+            sed -i 's/GumInterceptor/GumSystemMonitor/g' "$G_INTER"
+            sed -i 's/attached_listeners/registered_callbacks/g' "$G_INTER"
+            sed -i 's/gum_interceptor_attach/gum_system_monitor_register/g' "$G_INTER"
           fi
-
-          # 2. 基础字符串混淆 (你的原逻辑, 但限制在源码目录)
-          find $SRC_TARGETS -type f \( -name "*.c" -o -name "*.h" -o -name "*.vala" \) 2>/dev/null | xargs sed -i \
+          
+          # 2. 基础字符串混淆 (限制在源码目录，防止破坏 meson.build 中的变量)
+          find $TARGET_DIRS -type f \( -name "*.c" -o -name "*.h" -o -name "*.vala" \) 2>/dev/null | xargs sed -i \
             -e 's/#define FRIDA_SERVER_PORT 27042/#define FRIDA_SERVER_PORT 59999/g' \
             -e 's/"frida"/"arm64v8"/g' \
             -e 's/frida_/android_/g' \
@@ -53,7 +51,7 @@ jobs:
             -e 's/"frida-server"/"com.android.system.sync"/g' \
             -e 's/"frida-agent"/"libandroid_runtime"/g' 2>/dev/null || true
 
-          # 3. 线程与进程隐藏 (你的原逻辑)
+          # 3. 线程与内存隐藏
           GUM_DIR=$(find frida-gum -type d -name "gum" | head -1)
           if [ -n "$GUM_DIR" ]; then
             sed -i 's/"gum-js-loop"/"EventDispatcher"/g' "$GUM_DIR"/gum-thread.c 2>/dev/null || true
@@ -61,50 +59,58 @@ jobs:
             sed -i 's/ptrace(/syscall(SYS_ptrace,/g' "$GUM_DIR"/gum-debug.c 2>/dev/null || true
           fi
 
-          # 4. 编译参数注入 (你的原逻辑)
-          sed -i "/project('frida'/a add_global_arguments('-O1', '-fno-inline', '-fvisibility=hidden', '-ffunction-sections', '-fdata-sections', language: 'c')" meson.build
+      - name: 【第四层】编译参数注入 (修复语法错误位置)
+        run: |
+          cd frida
+          # 修复点：将参数注入到 project() 定义块结束之后的下一行，而不是中间
+          # 这行 sed 会在包含 'strip=true' 的行（通常是 project 定义的末尾）后面插入全局参数
+          sed -i "/strip=true/a \ \nadd_global_arguments('-O1', '-fno-inline', '-fvisibility=hidden', '-ffunction-sections', '-fdata-sections', language: 'c')" meson.build
 
       - name: 编译 Android arm64 服务端
         run: |
           cd frida
-          # 显式指定 Android 编译目标
-          make server-android-arm64 || (echo "编译失败! 正在输出最后日志..." && tail -n 200 build/meson-logs/meson-log.txt && exit 1)
+          export CFLAGS="-O1 -fvisibility=hidden"
+          # 如果 make 失败，输出最后 100 行编译日志供调试
+          make server-android-arm64 || (tail -n 100 build/meson-logs/meson-log.txt && exit 1)
 
-      - name: 【第五层】后编译二进制混淆与打包
+      - name: 【第五层】后编译二进制混淆
         run: |
           cd frida
-          # 动态查找编译产物 (解决路径不匹配问题)
+          # 动态查找二进制位置
           SERVER_BIN=$(find build/ -name frida-server -type f | grep android-arm64 | head -n 1)
           
-          if [ -z "$SERVER_BIN" ] || [ ! -f "$SERVER_BIN" ]; then
-            echo "错误：未找到编译产物。 build 目录内容如下："
+          if [ -z "$SERVER_BIN" ]; then
+            echo "错误：未找到编译产物"
             find build/ -maxdepth 5
             exit 1
           fi
           
           mkdir -p ../out
-          # 复制到输出目录进行二次处理
           cp "$SERVER_BIN" ../out/frida-server-final
-          
           cd ../out
-          # 你的二进制混淆逻辑
+          
+          # 二进制混淆 (原样保留)
           strip --strip-all frida-server-final
           python3 -c "f=open('frida-server-final','r+b'); f.seek(7); f.write(b'\x00\x00'); f.close()"
           upx --best --lzma frida-server-final || true
           
-          # 生成你的对抗脚本 (原样保留)
-          cat > anti-detect-ultimate.js << 'EOF'
+          # 生成对抗脚本 (原样保留)
+          cat > anti-detect.js << 'EOF'
           function initialize() {
               var prctl = Module.findExportByName(null, "prctl");
               if (prctl) {
                   Interceptor.attach(prctl, { onEnter: function(args) { if (args[0].toInt32() === 15) args[1] = Memory.allocUtf8String("surfaceflinger"); } });
               }
-              console.log("[✓] 终极对抗系统已激活");
+              console.log("[✓] 终极对抗系统已启动");
           }
           setTimeout(initialize, 1000);
           EOF
 
-          zip -r frida-ultimate.zip frida-server-final anti-detect-ultimate.js
+      - name: 生成打包与上传
+        run: |
+          cd out
+          zip -r frida-ultimate.zip frida-server-final anti-detect.js
+          sha256sum frida-ultimate.zip
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
