@@ -38,6 +38,8 @@ jobs:
 
       - name: Build for android-arm64
         run: |
+          # 先进入源码根目录（如果 Florida 代码在子目录，需调整路径，比如 cd frida）
+          ls -la  # 查看当前目录文件，确认 Makefile 存在
           make ANDROID_ARCH=arm64
 
       - name: Upload obfuscated frida-server
