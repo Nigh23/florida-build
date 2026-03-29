@@ -232,7 +232,7 @@ jobs:
         run: |
           cd frida
           
-          SERVER_BIN=$(find build -name "frida-server" -type f 2>/dev/null | head -1)
+          SERVER_BIN="build/android-arm64/bin/frida-server"
           if [ ! -f "$SERVER_BIN" ]; then
             echo "错误：未找到编译产物"
             exit 1
@@ -675,7 +675,7 @@ jobs:
           ## 📊 隐身数据
           
           - 二进制大小: +10-15% (NOP垫片)
-          - 启动时间: 无变化
+          - 启动时间:无变化
           - Hook 性能: -3% 左右
           - 检测难度: ★★★★★ (5/5)
           EOF
