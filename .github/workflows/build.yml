@@ -1,4 +1,4 @@
-name: Build Florida 16.5.6 (Stealth Server Only)
+name: Build Florida 16.5.6 (Stealth Server - No Python Bindings)
 
 on:
   workflow_dispatch:
@@ -32,7 +32,14 @@ jobs:
 
       - name: Apply Florida patch
         run: |
-          cp -rf florida/* frida/ 2>/dev/null
+          cp -rf florida/* frida/ 2>/dev/null || true
+
+      # 🔥 关键：从构建配置中彻底删掉 frida-python 和 frida-tools，避免编译 Python 绑定
+      - name: Remove frida-python/frida-tools from build
+        run: |
+          cd frida
+          sed -i '/subproject.*frida-python/d' meson.build
+          sed -i '/subproject.*frida-tools/d' meson.build
 
       - name: Stealth patch (Anti-Cheat)
         run: |
@@ -41,23 +48,20 @@ jobs:
 
           # 端口隐藏
           sed -i 's/27042/57331/g' $GUM_DIR/gum-server.c 2>/dev/null || true
-
           # 内存名称隐藏 (maps)
           sed -i 's/"frida-agent"/"libsys"/g' $GUM_DIR/gum-allocator.c 2>/dev/null || true
           sed -i 's/"frida-jit"/"libcache"/g' $GUM_DIR/gum-allocator.c 2>/dev/null || true
-
           # 线程名隐藏
           sed -i 's/"gum-js-loop"/"sys-loop"/g' $GUM_DIR/gum-thread.c 2>/dev/null || true
           sed -i 's/"frida-thread"/"sys-thread"/g' $GUM_DIR/gum-thread.c 2>/dev/null || true
-
           # 取消RWX内存特征
           sed -i 's/GUM_PAGE_READ_WRITE_EXEC/GUM_PAGE_READ_WRITE/g' $GUM_DIR/gummemory.c 2>/dev/null || true
 
-      # 🔥 关键：只编译 server，跳过 Python 绑定，彻底解决 pyconfig.h
-      - name: Build android-arm64 server-only
+      # ✅ 标准编译 Android arm64，不会再碰 frida-python
+      - name: Build android-arm64
         run: |
           cd frida
-          make ANDROID_ARCH=arm64 server
+          make ANDROID_ARCH=arm64
 
       - name: Upload frida-server
         uses: actions/upload-artifact@v4
