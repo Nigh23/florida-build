@@ -190,7 +190,7 @@ jobs:
           done
           echo "✓ 编译配置优化完成"
 
-      # ========== 核心终极修复：强制 Frida 使用 Meson 1.3.2 ==========
+      # ========== 核心修复1：替换内置Meson为1.3.2 ==========
       - name: 强制替换 Frida 内置 Meson 为 1.3.2
         run: |
           cd frida
@@ -211,6 +211,13 @@ jobs:
           echo "=== 替换完成验证 ==="
           ls -l releng/meson
           python3 releng/meson/meson.py --version
+
+      # ========== 核心修复2：解决Meson语法冲突（必加） ==========
+      - name: 修复 meson.build 语法错误（Florida+Meson1.3.2冲突）
+        run: |
+          cd frida
+          sed -i "s/version: run_command.*/version: '16.5.6',/" meson.build
+          echo "✅ 已固定版本号，修复Meson语法兼容问题"
 
       # ========== 编译阶段 ==========
       - name: 编译 Android arm64 服务端
