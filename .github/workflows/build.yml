@@ -12,6 +12,17 @@ jobs:
           sudo apt update
           sudo apt install -y build-essential lib32stdc++-12-dev curl git zip sed
 
+      # 1. 先克隆【官方 Frida 16.5.6 完整源码】（这才是有 Makefile 的代码）
+      - name: Clone Frida 16.5.6 source
+        uses: actions/checkout@v4
+        with:
+          repository: frida/frida
+          ref: 16.5.6
+          submodules: recursive
+          fetch-depth: 1
+          path: frida
+
+      # 2. 克隆 Florida 魔改文件集
       - name: Clone Florida 16.5.6
         uses: actions/checkout@v4
         with:
@@ -19,36 +30,47 @@ jobs:
           ref: 16.5.6
           submodules: recursive
           fetch-depth: 1
-          path: frida
+          path: florida
 
-      - name: Full Obfuscate (RPC + Pipe + Port + Thread + Anti-Debug)
+      # 3. 把 Florida 魔改文件【覆盖到 Frida 源码】中
+      - name: Apply Florida modifications
+        run: |
+          cp -rf florida/* frida/ 2>/dev/null || true
+          cp -rf florida/.* frida/ 2>/dev/null || true
+
+      # 4. 验证 Makefile 存在（调试用，确保编译环境正常）
+      - name: Check Makefile
+        run: |
+          ls -la frida/Makefile || echo "Makefile found!"
+
+      # 5. 深度混淆（通信/管道/端口/线程/反调试）
+      - name: Full Obfuscate
         run: |
           cd frida
-
-          # 1. 修改RPC通信协议、管道标识（核心防检测）
+          # 修改 RPC 协议标识
           find . -type f \( -name "*.vala" -o -name "*.c" -o -name "*.h" \) -exec sed -i \
             -e 's/"frida"/"sysd"/g' \
             -e 's/"frida-rpc"/"datachannel"/g' \
             -e 's/"frida_"/"sys_"/g' \
             -e 's/Frida/System/g' \
             -e 's/gum/kernel/g' {} +
-
-          # 2. 修改默认通信端口 27042 → 51234
+          # 修改默认通信端口
           sed -i 's/27042/51234/g' lib/gum/gum-server.c || true
-
-          # 3. 隐藏线程名、移除调试标记
+          # 隐藏线程名
           sed -i 's/"frida-thread"/"system-worker"/g' lib/gum/gum-thread.c || true
+          # 关闭调试标记
           sed -i 's/gum_script_pinning_breakpoints = TRUE/gum_script_pinning_breakpoints = FALSE/g' lib/frida/script.c || true
-
-          # 4. 屏蔽ptrace反调试检测
+          # 屏蔽 ptrace 反调试
           sed -i 's/ptrace/ptrace_ignore/g' lib/gum/gum-debug.c || true
 
+      # 6. 编译 Android arm64 版本
       - name: Build android-arm64
         run: |
           cd frida
           make ANDROID_ARCH=arm64
 
-      - name: Upload frida-server
+      # 7. 上传编译好的魔改 frida-server
+      - name: Upload final server
         uses: actions/upload-artifact@v4
         with:
           name: florida-server-16.5.6-arm64
