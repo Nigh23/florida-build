@@ -1,4 +1,4 @@
-name: Build Florida 16.5.6 arm64 (Anti-Cheat + Anti-Debug)
+name: Build Florida 16.5.6 arm64 (FULL Obfuscate + Anti-Cheat)
 
 on:
   workflow_dispatch:
@@ -10,64 +10,73 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential lib32stdc++-12-dev curl git zip sed patch
+          sudo apt install -y build-essential lib32stdc++-12-dev curl git zip sed
 
-      # 1. 先克隆官方 Frida 16.5.6 源码（这才是真正有 Makefile 的代码）
-      - name: Clone Frida 16.5.6 source
-        uses: actions/checkout@v4
-        with:
-          repository: frida/frida
-          ref: 16.5.6
-          submodules: recursive
-          fetch-depth: 1
-          path: frida
-
-      # 2. 克隆 Florida 补丁仓库
-      - name: Clone Florida 16.5.6 patches
+      - name: Clone Florida 16.5.6
         uses: actions/checkout@v4
         with:
           repository: Ylarod/Florida
           ref: 16.5.6
           submodules: recursive
           fetch-depth: 1
-          path: florida
+          path: frida
 
-      # 3. 应用 Florida 补丁到 Frida 源码
-      - name: Apply Florida patches
+      # ==================== 深度魔改：通信 + Interceptor + 反调试 ====================
+      - name: Full obfuscate (RPC + Pipe + Socket + Interceptor)
         run: |
           cd frida
-          for patch in ../florida/patches/*.patch; do
-            echo "Applying $patch..."
-            patch -p1 < "$patch"
-          done
 
-      # 4. 额外混淆 + 反调试补丁（之前的去特征逻辑）
-      - name: Obfuscate & anti-debug patch
-        run: |
-          cd frida
-          # 替换敏感字符串
-          find . -type f \( -name "*.[ch]" -o -name "*.vala" \) -exec sed -i \
-            -e 's/frida/system_service/g' \
-            -e 's/gum/kernel_log/g' \
-            -e 's/GumInterceptor/SysMonitor/g' \
-            -e 's/Frida/SystemDaemon/g' {} +
-          # 修改默认端口
-          sed -i 's/27042/53729/g' lib/gum/gumserver.c || true
-          # 魔改 ARM64 Hook 指令特征
-          sed -i 's/\x10\x00\x00\x58/\x11\x00\x00\x58/g' lib/gum/arch-arm64/guminterceptor-arm64.c || true
-          sed -i 's/\x00\x02\x1F\xD6/\x20\x02\x1F\xD6/g' lib/gum/arch-arm64/guminterceptor-arm64.c || true
-          # 关闭调试标记
-          sed -i 's/gum_script_pinning_breakpoints = TRUE/gum_script_pinning_breakpoints = FALSE/g' lib/frida/script.c || true
+          ###########################################################################
+          # 1. 改 RPC 通信协议头（核心：干掉 frida-rpc 标识）
+          ###########################################################################
+          find . -type f \( -name "*.vala" -o -name "*.c" -o -name "*.h" \) -exec sed -i \
+            -e 's/"frida"/"sysd"/g' \
+            -e 's/"frida-agent"/"sys_agent"/g' \
+            -e 's/"frida-rpc"/"data-rpc"/g' \
+            -e 's/"reject"/"accept"/g' \
+            -e 's/"gum"/"kmalloc"/g' {} +
 
-      # 5. 进入 Frida 目录编译（现在有 Makefile 了）
-      - name: Build for android-arm64
+          ###########################################################################
+          # 2. 改 命名管道 / UNIX socket 名称（防止检测管道特征）
+          ###########################################################################
+          find . -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i \
+            -e 's/frida_\[0-9a-fA-F\]/sys_pipe_/g' \
+            -e 's/Frida-/System-/g' \
+            -e 's/gum-injector/kernel-inject/g' {} +
+
+          ###########################################################################
+          # 3. 改 线程名、进程名（防止检测线程名特征）
+          ###########################################################################
+          find . -type f \( -name "*.c" -o -name "*.vala" \) -exec sed -i \
+            -e 's/"frida-thread"/"system-work"/g' \
+            -e 's/"gum-thread"/"kernel-work"/g' {} +
+
+          ###########################################################################
+          # 4. 改 Interceptor 跳转模板（核心：换掉 Hook 指令特征）
+          ###########################################################################
+          sed -i 's/\x10\x00\x00\x58/\x15\x00\x00\x58/g' lib/gum/arch-arm64/guminterceptor-arm64.c
+          sed -i 's/\x00\x02\x1F\xD6/\x3F\x02\x1F\xD6/g' lib/gum/arch-arm64/guminterceptor-arm64.c
+
+          ###########################################################################
+          # 5. 改默认通信端口 27042 → 随机高端口
+          ###########################################################################
+          sed -i 's/27042/51234/g' lib/gum/gumserver.c
+
+          ###########################################################################
+          # 6. 关闭调试管道、禁止暴露调试标记
+          ###########################################################################
+          sed -i 's/gum_script_pinning_breakpoints = TRUE/gum_script_pinning_breakpoints = FALSE/g' lib/frida/script.c
+          sed -i 's/gum_debugger_is_attached()/0/g' lib/gum/gumdebug.c
+          sed -i 's/ptrace/ptrace_hidden/g' lib/gum/gumptrace.c
+
+      # ==================== 编译 ====================
+      - name: Build android-arm64
         run: |
           cd frida
           make ANDROID_ARCH=arm64
 
-      # 6. 上传编译好的魔改 frida-server
-      - name: Upload obfuscated frida-server
+      - name: Upload final server
         uses: actions/upload-artifact@v4
         with:
-          name: florida-server-16.5.6-android-arm64
+          name: florida-server-16.5.6-arm64-final
           path: frida/build/frida-android-arm64/bin/frida-server
