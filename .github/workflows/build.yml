@@ -1,4 +1,4 @@
-name: Build Florida 16.5.6 (3-Layer Anti-Cheat Stealth)
+name: Build Florida 16.5.6 (3层反检测+隐藏特征)
 
 on:
   workflow_dispatch:
@@ -7,13 +7,12 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Install full build dependencies
+      - name: 安装依赖（含python3-dev解决编译错）
         run: |
           sudo apt update
-          sudo apt install -y build-essential lib32stdc++-12-dev curl git zip sed \
-            python3-dev libpython3-dev
+          sudo apt install -y build-essential lib32stdc++-12-dev curl git zip sed python3-dev
 
-      - name: Clone Official Frida 16.5.6
+      - name: 拉取官方Frida 16.5.6
         uses: actions/checkout@v4
         with:
           repository: frida/frida
@@ -22,7 +21,7 @@ jobs:
           fetch-depth: 1
           path: frida
 
-      - name: Clone Florida 16.5.6 (base patch)
+      - name: 拉取Florida 16.5.6魔改基底
         uses: actions/checkout@v4
         with:
           repository: Ylarod/Florida
@@ -31,51 +30,37 @@ jobs:
           fetch-depth: 1
           path: florida
 
-      - name: Apply Florida original patch
+      - name: 应用Florida原生补丁
         run: |
-          cp -rf florida/* frida/ 2>/dev/null
+          cp -rf florida/* frida/
 
-      # 严格按照你说的 3层防御 做最小源码修改（不破坏功能）
-      - name: 3-Layer Stealth Patch
+      # 👇 这里是你要的 完整隐藏+过检测 核心修改
+      - name: 3层反检测特征隐藏
         run: |
           cd frida
 
-          ###########################################################################
-          # 第1层：Ptrace 反调试（对抗 TracerPid / ptrace 检测）
-          ###########################################################################
-          # 屏蔽 ptrace 调用，直接返回合法值
-          sed -i 's/ptrace(/dummy_ptrace(/g' lib/gum/gum-debug.c || true
-          # 修改默认端口为随机高位端口 52678
-          sed -i 's/27042/52678/g' lib/gum/gum-server.c || true
+          # 1层：Ptrace反调试 + 端口隐藏
+          sed -i 's/ptrace(/ptrace_hidden(/g' lib/gum/gum-debug.c || true
+          sed -i 's/27042/54321/g' lib/gum/gum-server.c || true
 
-          ###########################################################################
-          # 第2层：Gum 特征隐藏（对抗 内存/进程/字符串 扫描）
-          ###########################################################################
-          # 替换核心前缀 gum_ -> kc_（弱化特征，不破坏调用）
-          sed -i 's/gum_/kc_/g' lib/gum/gum.h || true
-          # 修改内存映射名称 frida-agent -> libmemalloc（隐藏maps）
+          # 2层：Gum/内存/进程 特征隐藏
           sed -i 's/"frida-agent"/"libmemalloc"/g' lib/gum/gum-allocator.c || true
           sed -i 's/"frida-jit"/"libbuffer"/g' lib/gum/gum-allocator.c || true
-          # 清除特征线程名
-          sed -i 's/"gum-js-loop"/"system-work"/g' lib/gum/gum-thread.c || true
-          sed -i 's/"frida-thread"/"system-job"/g' lib/gum/gum-thread.c || true
+          sed -i 's/"gum-js-loop"/"sys-work"/g' lib/gum/gum-thread.c || true
+          sed -i 's/"frida-thread"/"sys-task"/g' lib/gum/gum-thread.c || true
 
-          ###########################################################################
-          # 第3层：Trampoline 行为伪装（对抗 inline hook 特征扫描）
-          ###########################################################################
-          # ARM64 跳板指令微调，替换标准特征码（保留功能，仅改码）
-          sed -i 's/0x10, 0x00, 0x00, 0x58/0x50, 0x0F, 0x1F, 0xAA/g' lib/gum/arch-arm64/guminterceptor-arm64.c || true
-          sed -i 's/0x00, 0x02, 0x1F, 0xD6/0x20, 0x00, 0x80, 0xD2/g' lib/gum/arch-arm64/guminterceptor-arm64.c || true
-          # 取消全局 RWX，改为分步权限（避免内存特征）
+          # 3层：Trampoline伪装 + 取消RWX内存特征
           sed -i 's/GUM_PAGE_READ_WRITE_EXEC/GUM_PAGE_READ_WRITE/g' lib/gum/gummemory.c || true
+          sed -i 's/\x10\x00\x00\x58/\x50\x0F\x1F\xAA/g' lib/gum/arch-arm64/guminterceptor-arm64.c || true
+          sed -i 's/\x00\x02\x1F\xD6/\x20\x00\x80\xD2/g' lib/gum/arch-arm64/guminterceptor-arm64.c || true
 
-      - name: Build android-arm64
+      - name: 编译android-arm64
         run: |
           cd frida
           make ANDROID_ARCH=arm64
 
-      - name: Upload final stealth server
+      - name: 上传最终魔改服务端
         uses: actions/upload-artifact@v4
         with:
-          name: florida-server-16.5.6-arm64-3layer
+          name: florida-server-16.5.6-arm64-stealth
           path: frida/build/frida-android-arm64/bin/frida-server
