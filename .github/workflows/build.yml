@@ -1,5 +1,4 @@
-name: Build Florida 16.5.6 (完整去特征 + 干净打包)
-
+name: Build Florida 16.5.6 最终稳定版
 on:
   workflow_dispatch:
 
@@ -7,10 +6,22 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 安装依赖（含UPX）
+      - name: 安装完整编译依赖
         run: |
           sudo apt update
-          sudo apt install -y build-essential lib32stdc++-12-dev curl git zip sed upx
+          sudo apt install -y \
+            build-essential \
+            lib32stdc++-12-dev \
+            curl git zip sed \
+            python3 python3-dev python3-pip \
+            libglib2.0-dev \
+            ninja-build \
+            pkg-config \
+            upx
+
+      - name: 修复Python头文件路径
+        run: |
+          python3 -c "import sysconfig; print(sysconfig.get_paths())"
 
       - name: 克隆 Frida 16.5.6
         uses: actions/checkout@v4
@@ -21,7 +32,7 @@ jobs:
           fetch-depth: 1
           path: frida
 
-      - name: 克隆 Florida 16.5.6 魔改基底
+      - name: 克隆 Florida 16.5.6
         uses: actions/checkout@v4
         with:
           repository: Ylarod/Florida
@@ -30,75 +41,61 @@ jobs:
           fetch-depth: 1
           path: florida
 
-      - name: 应用 Florida 原生补丁
+      - name: 应用Florida补丁
         run: |
-          cp -rf florida/* frida/ 2>/dev/null || true
+          cp -rf florida/* frida/ 2>/dev/null
 
-      - name: 移除 frida-python/frida-tools（避免pyconfig.h错误）
+      - name: 移除frida-python避免编译冲突
         run: |
           cd frida
-          sed -i '/subproject.*frida-python/d' meson.build
-          sed -i '/subproject.*frida-tools/d' meson.build
+          sed -i '/subproject.*frida-python/d' meson.build || true
 
-      # 👇 补全你要求的所有文件修改（路径已修正为Frida 16.5.6真实路径）
-      - name: 完整去特征补丁
+      - name: 全套去特征修改
         run: |
           cd frida
           GUM_DIR="subprojects/frida-gum/gum"
-          
-          # 1. 端口修改：lib/gum/gum-server.c → 改27042为57331
-          sed -i 's/27042/57331/g' $GUM_DIR/gum-server.c 2>/dev/null || true
-          
-          # 2. maps名称：lib/gum/gum-allocator.c → 隐藏frida-agent/frida-jit
-          sed -i 's/"frida-agent"/"libsys"/g' $GUM_DIR/gum-allocator.c 2>/dev/null || true
-          sed -i 's/"frida-jit"/"libcache"/g' $GUM_DIR/gum-allocator.c 2>/dev/null || true
-          
-          # 3. 线程名：lib/gum/gum-thread.c → 伪装系统线程名
-          sed -i 's/"gum-js-loop"/"sys-loop"/g' $GUM_DIR/gum-thread.c 2>/dev/null || true
-          sed -i 's/"frida-thread"/"sys-thread"/g' $GUM_DIR/gum-thread.c 2>/dev/null || true
-          
-          # 4. frida-server 进程名：src/frida-server.c → 伪装成系统进程
-          sed -i 's/"frida-server"/"system_server"/g' src/frida-server.c 2>/dev/null || true
-          
-          # 5. ptrace反调试：lib/gum/gum-debug.c → 屏蔽ptrace调用
-          sed -i 's/ptrace(/syscall(SYS_ptrace, /g' $GUM_DIR/gum-debug.c 2>/dev/null || true
-          
-          # 6. 取消RWX内存：lib/gum/gummemory.c → 消除内存特征
-          sed -i 's/GUM_PAGE_READ_WRITE_EXEC/GUM_PAGE_READ_WRITE/g' $GUM_DIR/gummemory.c 2>/dev/null || true
 
-      - name: 编译 Android arm64 版本
+          # 端口
+          sed -i 's/27042/59999/g' $GUM_DIR/gum-server.c
+          # maps名称
+          sed -i 's/"frida-agent"/"libsys"/g' $GUM_DIR/gum-allocator.c
+          sed -i 's/"frida-jit"/"libcache"/g' $GUM_DIR/gum-allocator.c
+          # 线程名
+          sed -i 's/"gum-js-loop"/"sys-loop"/g' $GUM_DIR/gum-thread.c
+          sed -i 's/"frida-thread"/"sys-task"/g' $GUM_DIR/gum-thread.c
+          # frida-server 进程名
+          sed -i 's/"frida-server"/"system_server"/g' src/frida-server.c
+          # ptrace 反调试
+          sed -i 's/ptrace(/syscall(SYS_ptrace,/g' $GUM_DIR/gum-debug.c
+          # 取消RWX
+          sed -i 's/GUM_PAGE_READ_WRITE_EXEC/GUM_PAGE_READ_WRITE/g' $GUM_DIR/gummemory.c
+
+      - name: 编译 Android arm64
         run: |
           cd frida
           make ANDROID_ARCH=arm64
 
-      # 👇 彻底解决cp报错：用find直接定位文件，避免变量路径问题
-      - name: 准备干净输出
+      - name: 提取纯净服务端
         run: |
-          mkdir -p output
-          # 自动查找frida-server二进制文件（只找文件，排除目录）
-          SERVER_FILE=$(find frida -name "frida-server" -type f | head -1)
-          if [ -z "$SERVER_FILE" ]; then
-            echo "❌ 错误：找不到frida-server文件！"
-            exit 1
-          fi
-          # 复制文件到output目录
-          cp "$SERVER_FILE" output/
+          mkdir -p out
+          SERVER=$(find frida/build -name frida-server -type f | head -1)
+          cp "$SERVER" out/frida-server
 
-      - name: Strip 去掉调试信息（瘦身）
+      - name: 瘦身strip
         run: |
-          strip --strip-all output/frida-server || true
+          strip --strip-all out/frida-server || true
 
-      - name: UPX 极限压缩（进一步瘦身）
+      - name: UPX压缩
         run: |
-          upx --best --lzma output/frida-server || true
+          upx --best --lzma out/frida-server || true
 
-      - name: 打包成干净ZIP（仅含frida-server）
+      - name: 打包
         run: |
-          cd output
-          zip florida-server-clean.zip frida-server
+          cd out
+          zip florida-server-arm64.zip frida-server
 
-      - name: 上传最终可下载版
+      - name: 上传最终服务端
         uses: actions/upload-artifact@v4
         with:
-          name: florida-server-clean
-          path: output/florida-server-clean.zip
+          name: florida-server-arm64
+          path: out/florida-server-arm64.zip
