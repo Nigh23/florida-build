@@ -1,4 +1,4 @@
-name: Build Florida 16.5.6 (自动路径查找版)
+name: Build Florida 16.5.6 (Clean + Strip + UPX)
 
 on:
   workflow_dispatch:
@@ -7,12 +7,12 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 安装编译依赖
+      - name: 安装依赖（含 UPX）
         run: |
           sudo apt update
-          sudo apt install -y build-essential lib32stdc++-12-dev curl git zip sed
+          sudo apt install -y build-essential lib32stdc++-12-dev curl git zip sed upx
 
-      - name: 克隆官方 Frida 16.5.6
+      - name: 克隆 Frida 16.5.6
         uses: actions/checkout@v4
         with:
           repository: frida/frida
@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 1
           path: frida
 
-      - name: 克隆 Florida 16.5.6 魔改基底
+      - name: 克隆 Florida 16.5.6
         uses: actions/checkout@v4
         with:
           repository: Ylarod/Florida
@@ -30,11 +30,11 @@ jobs:
           fetch-depth: 1
           path: florida
 
-      - name: 应用 Florida 原生补丁
+      - name: 应用 Florida 补丁
         run: |
           cp -rf florida/* frida/ 2>/dev/null || true
 
-      - name: 移除 frida-python/frida-tools（避免 pyconfig.h 错误）
+      - name: 移除 frida-python/frida-tools
         run: |
           cd frida
           sed -i '/subproject.*frida-python/d' meson.build
@@ -44,34 +44,51 @@ jobs:
         run: |
           cd frida
           GUM_DIR="subprojects/frida-gum/gum"
-
-          # 1. 端口隐藏（改默认 27042 → 57331）
           sed -i 's/27042/57331/g' $GUM_DIR/gum-server.c 2>/dev/null || true
-          # 2. 内存名称隐藏（maps 里不显示 frida-agent）
           sed -i 's/"frida-agent"/"libsys"/g' $GUM_DIR/gum-allocator.c 2>/dev/null || true
           sed -i 's/"frida-jit"/"libcache"/g' $GUM_DIR/gum-allocator.c 2>/dev/null || true
-          # 3. 线程名伪装（消除 frida/gum 特征）
           sed -i 's/"gum-js-loop"/"sys-loop"/g' $GUM_DIR/gum-thread.c 2>/dev/null || true
           sed -i 's/"frida-thread"/"sys-thread"/g' $GUM_DIR/gum-thread.c 2>/dev/null || true
-          # 4. 取消 RWX 内存（避免内存扫描）
           sed -i 's/GUM_PAGE_READ_WRITE_EXEC/GUM_PAGE_READ_WRITE/g' $GUM_DIR/gummemory.c 2>/dev/null || true
 
-      - name: 编译 Android arm64 版本
+      - name: 编译 Android arm64
         run: |
           cd frida
           make ANDROID_ARCH=arm64
 
-      # 🔥 关键：自动查找 frida-server 真实路径
-      - name: 查找 frida-server 路径
+      # 自动定位 frida-server 路径
+      - name: 查找 frida-server
         id: find_server
         run: |
           cd frida
           SERVER_PATH=$(find build -name "frida-server" | head -1)
           echo "server_path=$SERVER_PATH" >> $GITHUB_OUTPUT
-          echo "找到 frida-server 路径: $SERVER_PATH"
 
-      - name: 上传可下载的 frida-server
+      # 1. 只保留 server，创建干净目录
+      - name: 准备干净输出
+        run: |
+          mkdir -p output
+          cp frida/${{ steps.find_server.outputs.server_path }} output/
+
+      # 2. Strip 去掉调试信息（体积砍半）
+      - name: Strip 二进制
+        run: |
+          strip --strip-all output/frida-server || true
+
+      # 3. UPX 极限压缩（再压 50%）
+      - name: UPX 压缩
+        run: |
+          upx --best --lzma output/frida-server || true
+
+      # 4. 打包成干净 ZIP（仅含 frida-server）
+      - name: 打包 ZIP
+        run: |
+          cd output
+          zip florida-server-clean.zip frida-server
+
+      # 5. 上传最终干净版
+      - name: 上传可下载版
         uses: actions/upload-artifact@v4
         with:
-          name: florida-server-16.5.6-arm64
-          path: frida/${{ steps.find_server.outputs.server_path }}
+          name: florida-server-clean
+          path: output/florida-server-clean.zip
