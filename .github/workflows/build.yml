@@ -1,4 +1,4 @@
-name: Frida 16.5.6 高级抗检测版 · 可正常编译
+name: Frida 16.5.6 Florida 稳定版
 on:
   workflow_dispatch:
 
@@ -9,7 +9,8 @@ jobs:
       - name: 安装依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential curl git zip sed python3 python3-dev python3-pip pkg-config upx binutils
+          sudo apt-get install -y build-essential curl git zip sed python3 python3-dev pkg-config binutils
+
       - name: 克隆 Frida 16.5.6
         uses: actions/checkout@v4
         with:
@@ -18,160 +19,65 @@ jobs:
           submodules: recursive
           fetch-depth: 1
           path: frida
+
       - name: 克隆 Florida 16.5.6
         uses: actions/checkout@v4
         with:
           repository: Ylarod/Florida
           ref: 16.5.6
-          submodules: recursive
           fetch-depth: 1
           path: florida
-      - name: 应用 Florida 核心去特征
+
+      - name: 正确应用 Florida 补丁
         run: |
           cd frida
-          for file in $(cd ../florida && find . -type f); do
-            mkdir -p $(dirname "$file")
-            cp -f "../florida/$file" "$file" 2>/dev/null || true
-          done
-      - name: 禁用 frida-python
+          tar -cf - -C ../florida . | tar -xf -
+
+      - name: 强制开启 frida-server
         run: |
           cd frida
-          sed -i 's/^\(.*subproject.*frida-python.*\)$/#\1/' meson.build || true
-      - name: 强制开启 server
+          # 正确开启 server 构建（官方标准方式）
+          echo "server = enabled" >> frida-core/meson.options
+          sed -i 's/option.*server.*/option(''server'', type: boolean, value: true)/' releng/meson/meson_options.txt
+          export FRIDA_SERVER=1
+          # 禁用不需要的子项目
+          sed -i '/frida-python/d' meson.build
+
+      - name: 基础抗检测混淆
         run: |
           cd frida
-          sed -i "s/value: false/value: true/g" releng/meson/meson_options.txt || true
-          export FRIDA_BUILD_SERVER=1
+          # 改端口
+          find . -type f \( -name *.c -o -name *.h -o -name *.vala \) | xargs sed -i 's/27042/57777/g'
+          # 改关键字符串
+          find . -type f \( -name *.c -o -name *.h -o -name *.vala \) | xargs sed -i \
+            -e 's/"frida-server"/"system_service"/g' \
+            -e 's/"frida"/"sys_daemon"/g' \
+            -e 's/"gum"/"g_lib"/g'
 
-      # ==============================================
-      # 高阶对抗：内存去特征 + 符号混淆 + 字符串全隐藏
-      # ==============================================
-      - name: 高级抗检测混淆
+      - name: 编译 frida-server-android-arm64
         run: |
           cd frida
+          make server-android-arm64
 
-          # 1. 彻底去掉 RWX 内存（过高阶内存检测）
-          find . -name "gummemory.c" -o -name "gumalloc.c" | while read file; do
-            sed -i 's/GUM_PAGE_READ_WRITE_EXEC/GUM_PAGE_READ_WRITE/g' "$file"
-            sed -i 's/PROT_EXEC | PROT_READ | PROT_WRITE/PROT_READ | PROT_WRITE/g' "$file"
-          done
-
-          # 2. 核心 Hook 符号重命名（过符号扫描）
-          find . -name "*interceptor*" -o -name "gum*.c" -o -name "gum*.h" | xargs sed -i \
-            -e 's/gum_interceptor_attach/gum__internal_attach/g' \
-            -e 's/gum_interceptor_detach/gum__internal_detach/g' \
-            -e 's/gum_interceptor_replace/gum__internal_replace/g' \
-            -e 's/attached_listeners/internal_list/g' \
-            -e 's/listener_list/chain_list/g' 2>/dev/null || true
-
-          # 3. 全局特征串洗白（过静态扫描）
-          find . \( -name "*.c" -o -name "*.h" -o -name "*.vala" \) | xargs sed -i \
-            -e 's/27042/54321/g' \
-            -e 's/"frida"/"sys_service"/g' \
-            -e 's/"frida-server"/"system_daemon"/g' \
-            -e 's/"frida-agent"/"libart_compat"/g' \
-            -e 's/"gum-js-loop"/"android.uevent"/g' \
-            -e 's/"frida-thread"/"system.worker"/g' \
-            -e 's/"gmain"/"sys.event"/g' \
-            -e 's/"gdbus"/"sys.ipc"/g' \
-            -e 's/"re.frida"/"com.android.system"/g' 2>/dev/null || true
-
-          # 4. 关闭调试标志（对抗XIGNCODE反调试）
-          find . -name "gumdebugger.c" -o -name "gumprocess.c" | xargs sed -i \
-            -e 's/debugger_active/dbg_disabled/g' \
-            -e 's/gum_debugger_is_attached/0/g' 2>/dev/null || true
-
-      # ==============================================
-      # 编译级去特征：打乱布局，降低特征熵
-      # ==============================================
-      - name: 编译优化去特征
+      - name: 提取产物
         run: |
           cd frida
-          find . -name "meson.build" | while read f; do
-            sed -i 's/-O2/-O1/g' "$f"
-            sed -i 's/-O3/-O1/g' "$f"
-          done
-          export CFLAGS="-O1 -g0 -fno-inline -fno-stack-protector"
-          export CXXFLAGS="$CFLAGS"
-
-      # ==============================================
-      # 编译 frida-server-arm64
-      # ==============================================
-      - name: 编译
-        run: |
-          cd frida
-          make server-android-arm64 2>&1 | tee build.log || (tail -100 build.log && exit 1)
-      - name: 取产物
-        run: |
-          cd frida
-          SERVER_BIN=$(find build -name "frida-server" -type f | head -1)
+          SERVER=$(find build -name "frida-server" -type f | head -1)
           mkdir -p ../out
-          cp "$SERVER_BIN" ../out/frida-server
+          cp "$SERVER" ../out/
 
-      # ==============================================
-      # ELF高阶匿踪：静态完全无特征
-      # ==============================================
-      - name: ELF深度清理
+      - name: ELF 精简清理
         run: |
           cd out
           strip --strip-all frida-server
-          objcopy --strip-debug --remove-section=.note --remove-section=.comment --remove-section=.gnu.version frida-server
-          python3 -c "import os; with open('frida-server','ab') as f: f.write(os.urandom(12288))"
-          upx --best frida-server 2>/dev/null || true
-
-      # ==============================================
-      # 运行时高阶对抗：进程隐藏+防自杀+防XIGNCODE
-      # ==============================================
-      - name: 生成高级反检测脚本
-        run: |
-          cat > out/anti-detect-advanced.js << 'EOF'
-          setTimeout(() => {
-            console.log("[+] 高级对抗模块启动");
-
-            // 1. 隐藏进程 from /proc
-            const selfPid = Process.id+'';
-            Interceptor.attach(Module.findExportByName(null,'getdents64'),{
-              onLeave(r){
-                let p=this.dirp,o=0;
-                while(o<r.toInt32()){
-                  let l=p.add(o+16).readU16(),n=p.add(o+19).readCString();
-                  if(n==selfPid){p.add(o).copyFrom(p.add(o+l),r.toInt32()-o-l),r.replace(r.sub(l));break;}
-                  o+=l;
-                }
-              }
-            });
-
-            // 2. 改进程名
-            new NativeFunction(Module.findExportByName("libc.so","prctl"),'int',['int','pointer'])(15, Memory.allocUtf8String("system_server"));
-
-            // 3. 防自杀、防退出
-            ['kill','exit','abort','raise'].forEach(f=>{
-              let a=Module.findExportByName(null,f);a&&Interceptor.attach(a,{onEnter(){}});
-            });
-
-            // 4. 拦截 maps / status / cmdline
-            ['open','openat'].forEach(f=>{
-              let a=Module.findExportByName(null,f);a&&Interceptor.attach(a,{
-                onEnter(b){let s=(f=='openat'?b[1]:b[0]).readCString();if(s&&/maps|status|cmdline|fd\//.test(s))this.b=1},
-                onLeave(v){if(this.b)v.replace(-1)}
-              });
-            });
-
-            // 5. 线程名伪装
-            let p=Module.findExportByName(null,'pthread_setname_np');
-            p&&Interceptor.attach(p,{onEnter(a){let n=a[1].readCString();if(n&&/gum|frida|sys/.test(n))a[1]=Memory.allocUtf8String("SurfaceFlinger")}});
-
-            console.log("[+] 高级对抗已激活：进程隐藏 + 内存隐藏 + 防自杀");
-          }, 300);
-          EOF
 
       - name: 打包
         run: |
           cd out
-          zip -9 frida-advanced-server.zip frida-server anti-detect-advanced.js
-          ls -lh
+          zip frida-server.zip frida-server
+
       - name: 上传
         uses: actions/upload-artifact@v4
         with:
-          name: frida-advanced-server
-          path: out/*
+          name: frida-server-arm64
+          path: out/frida-server
