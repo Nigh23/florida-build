@@ -1,4 +1,4 @@
-name: Build Frida 16.5.6 游戏对抗级 (Server魔改终极版)
+name: Build Florida 16.5.6 游戏对抗级 (Server魔改终极版)
 
 on:
   workflow_dispatch:
@@ -29,7 +29,7 @@ jobs:
       - name: 修复Python头文件路径
         run: python3 -c "import sysconfig; print(sysconfig.get_paths())"
 
-      - name: 克隆 Frida 16.5.6
+      - name: 克隆 Frida 16.5.6（含子模块）
         uses: actions/checkout@v4
         with:
           repository: frida/frida
@@ -47,69 +47,84 @@ jobs:
           fetch-depth: 1
           path: florida
 
-      - name: 应用 Florida 补丁
-        run: cp -rf florida/* frida/ 2>/dev/null
+      - name: 应用 Florida 补丁（仅复制存在的文件）
+        run: |
+          cd frida
+          # 安全复制，避免覆盖子模块目录结构
+          for file in $(cd ../florida && find . -type f); do
+            mkdir -p $(dirname "$file")
+            cp -f "../florida/$file" "$file" 2>/dev/null || true
+          done
 
       - name: 移除 frida-python 避免编译冲突
         run: |
           cd frida
           sed -i 's/^\(.*subproject.*frida-python.*\)$/#\1/' meson.build || true
 
-      - name: 游戏级深度去特征修改（源码层全覆盖）
+      - name: 游戏级深度去特征修改（动态路径查找）
         run: |
           cd frida
-          GUM_DIR="subprojects/frida-gum/gum"
-          CORE_DIR="subprojects/frida-core"
+          
+          # 定义查找函数，确保文件存在才修改
+          find_and_sed() {
+            local pattern=$1
+            local find_path=$2
+            local sed_expr=$3
+            find "$find_path" -type f -name "$pattern" 2>/dev/null | while read file; do
+              echo "修改: $file"
+              sed -i "$sed_expr" "$file"
+            done
+          }
+          
+          # 查找关键目录（Florida补丁可能移动了文件位置）
+          GUM_DIR=$(find . -type d -path "*/frida-gum/gum" 2>/dev/null | head -1)
+          CORE_DIR=$(find . -type d -path "*/frida-core" 2>/dev/null | head -1)
+          SERVER_DIR=$(find . -type d -path "*/server" 2>/dev/null | head -1)
+          
+          echo "GUM_DIR: $GUM_DIR"
+          echo "CORE_DIR: $CORE_DIR"
           
           # ---------- 基础伪装 ----------
-          # 端口 27042 -> 59999
-          sed -i 's/#define FRIDA_SERVER_PORT 27042/#define FRIDA_SERVER_PORT 59999/' src/server/server.c 2>/dev/null || true
-          # maps 中的库名
-          sed -i 's/"frida-agent"/"libart"/g' $GUM_DIR/gum-allocator.c
-          sed -i 's/"frida-jit"/"libhwui"/g' $GUM_DIR/gum-allocator.c
-          # 线程名
-          sed -i 's/"gum-js-loop"/"Finalizer"/g' $GUM_DIR/gum-thread.c
-          sed -i 's/"frida-thread"/"Binder_1"/g' $GUM_DIR/gum-thread.c
-          # 进程名
-          sed -i 's/"frida-server"/"surfaceflinger"/g' src/frida-server.c
-          # ptrace 绕过
-          sed -i 's/ptrace(/syscall(SYS_ptrace,/g' $GUM_DIR/gum-debug.c
-          # 取消 RWX
-          sed -i 's/GUM_PAGE_READ_WRITE_EXEC/GUM_PAGE_READ_WRITE/g' $GUM_DIR/gummemory.c
+          # 端口修改：查找所有包含 FRIDA_SERVER_PORT 的文件
+          find . -name "*.c" -o -name "*.h" | xargs sed -i 's/#define FRIDA_SERVER_PORT 27042/#define FRIDA_SERVER_PORT 59999/g' 2>/dev/null || true
+          
+          # maps 中的库名（动态查找）
+          if [ -n "$GUM_DIR" ]; then
+            sed -i 's/"frida-agent"/"libart"/g' "$GUM_DIR"/gum-allocator.c 2>/dev/null || true
+            sed -i 's/"frida-jit"/"libhwui"/g' "$GUM_DIR"/gum-allocator.c 2>/dev/null || true
+            # 线程名
+            sed -i 's/"gum-js-loop"/"Finalizer"/g' "$GUM_DIR"/gum-thread.c 2>/dev/null || true
+            sed -i 's/"frida-thread"/"Binder_1"/g' "$GUM_DIR"/gum-thread.c 2>/dev/null || true
+            # ptrace 绕过
+            sed -i 's/ptrace(/syscall(SYS_ptrace,/g' "$GUM_DIR"/gum-debug.c 2>/dev/null || true
+            # 取消 RWX
+            sed -i 's/GUM_PAGE_READ_WRITE_EXEC/GUM_PAGE_READ_WRITE/g' "$GUM_DIR"/gummemory.c 2>/dev/null || true
+          fi
+          
+          # 进程名修改
+          find . -name "frida-server.c" -exec sed -i 's/"frida-server"/"surfaceflinger"/g' {} \; 2>/dev/null || true
           
           # ---------- D-Bus 协议彻底伪装 ----------
-          # 修改认证响应 REJECT -> ACCEPT（让扫描器误判）
-          find $CORE_DIR -name "*.vala" -exec sed -i 's/"REJECT"/"ACCEPT"/g' {} \;
-          # 修改所有 "frida" 相关字符串
-          find $CORE_DIR -name "*.vala" -exec sed -i 's/"frida"/"system"/g' {} \;
-          find $CORE_DIR -name "*.vala" -exec sed -i 's/"FRIDA"/"SYSTEM"/g' {} \;
-          # 修改 D-Bus 接口名
-          find $CORE_DIR -name "*.vala" -exec sed -i 's/"re\.frida"/"android\.sys"/g' {} \;
-          find $CORE_DIR -name "*.vala" -exec sed -i 's/"re\.frida\.Helper"/"android\.sys\.Helper"/g' {} \;
+          if [ -n "$CORE_DIR" ]; then
+            find "$CORE_DIR" -name "*.vala" -exec sed -i 's/"REJECT"/"ACCEPT"/g' {} \; 2>/dev/null || true
+            find "$CORE_DIR" -name "*.vala" -exec sed -i 's/"frida"/"system"/g' {} \; 2>/dev/null || true
+            find "$CORE_DIR" -name "*.vala" -exec sed -i 's/"FRIDA"/"SYSTEM"/g' {} \; 2>/dev/null || true
+            find "$CORE_DIR" -name "*.vala" -exec sed -i 's/"re\.frida"/"android\.sys"/g' {} \; 2>/dev/null || true
+          fi
           
           # ---------- RPC 字符串混淆 ----------
-          RPC_VALA="$CORE_DIR/lib/base/rpc.vala"
-          if [ -f "$RPC_VALA" ]; then
-            sed -i 's/"frida:rpc"/"sys:ipc"/g' "$RPC_VALA"
-            sed -i 's/"frida:auth"/"sys:cred"/g' "$RPC_VALA"
-          fi
+          find . -name "rpc.vala" -exec sed -i 's/"frida:rpc"/"sys:ipc"/g' {} \; 2>/dev/null || true
+          find . -name "rpc.vala" -exec sed -i 's/"frida:auth"/"sys:cred"/g' {} \; 2>/dev/null || true
           
           # ---------- 符号表与入口点混淆 ----------
           find . -name "*.vala" -o -name "*.c" | xargs sed -i 's/frida_agent_main/android_main/g' 2>/dev/null || true
-          sed -i 's/g_set_prgname ("frida")/g_set_prgname ("android_serv")/g' $GUM_DIR/gum.c 2>/dev/null || true
+          find . -name "gum.c" -exec sed -i 's/g_set_prgname ("frida")/g_set_prgname ("android_serv")/g' {} \; 2>/dev/null || true
           
           # ---------- IPC 目录隐藏 ----------
-          SERVER_VALA="$CORE_DIR/src/server/server.vala"
-          if [ -f "$SERVER_VALA" ]; then
-            sed -i 's/DEFAULT_DIRECTORY = "frida"/DEFAULT_DIRECTORY = ".sys"/g' "$SERVER_VALA"
-            sed -i 's/"frida-"/"sys-"/g' "$SERVER_VALA"
-          fi
+          find . -name "server.vala" -exec sed -i 's/DEFAULT_DIRECTORY = "frida"/DEFAULT_DIRECTORY = ".sys"/g' {} \; 2>/dev/null || true
           
           # ---------- memfd 匿名文件特征修改 ----------
-          HELPER_VALA="$CORE_DIR/src/frida-helper-backend.vala"
-          if [ -f "$HELPER_VALA" ]; then
-            sed -i 's/"frida"/"jit-cache"/g' "$HELPER_VALA"
-          fi
+          find . -name "frida-helper-backend.vala" -exec sed -i 's/"frida"/"jit-cache"/g' {} \; 2>/dev/null || true
           
           echo "源码修改完成"
 
@@ -121,39 +136,65 @@ jobs:
       - name: 后编译二进制深度修补（消除所有残留特征）
         run: |
           cd frida
-          SERVER_BIN="build/frida-android-arm64/bin/frida-server"
+          SERVER_BIN=$(find build -name "frida-server" -type f 2>/dev/null | head -1)
           if [ ! -f "$SERVER_BIN" ]; then
-            echo "编译产物未找到，退出"
+            echo "错误：未找到编译产物 frida-server"
             exit 1
           fi
           
-          # 使用 sed 直接修改二进制中的字符串（简单可靠）
-          # 注意：替换的字符串长度必须与原字符串相同或更短
-          sed -i 's/frida:rpc/sys:ipc/g' "$SERVER_BIN"
-          sed -i 's/FRIDA/SYSD/g' "$SERVER_BIN"
-          sed -i 's/frida-agent/libart/g' "$SERVER_BIN"
-          sed -i 's/gum-js-loop/Finalizer/g' "$SERVER_BIN"
-          sed -i 's/frida-thread/Binder_1/g' "$SERVER_BIN"
-          sed -i 's/frida-server/surfaceflinger/g' "$SERVER_BIN"
-          sed -i 's/frida-jit/libhwui/g' "$SERVER_BIN"
-          sed -i 's/gmain/HeapTask/g' "$SERVER_BIN"
-          sed -i 's/gdbus/IPCThread/g' "$SERVER_BIN"
-          sed -i 's/re.frida/android.sys/g' "$SERVER_BIN"
+          echo "修补二进制文件: $SERVER_BIN"
+          
+          # 使用 sed 直接修改二进制中的字符串（长度必须相同或更短）
+          # 注意：使用 echo 先检查字符串是否存在
+          if strings "$SERVER_BIN" | grep -q "frida:rpc"; then
+            sed -i 's/frida:rpc/sys:ipc/g' "$SERVER_BIN"
+          fi
+          if strings "$SERVER_BIN" | grep -q "FRIDA"; then
+            sed -i 's/FRIDA/SYSD/g' "$SERVER_BIN"
+          fi
+          if strings "$SERVER_BIN" | grep -q "frida-agent"; then
+            sed -i 's/frida-agent/libart/g' "$SERVER_BIN"
+          fi
+          if strings "$SERVER_BIN" | grep -q "gum-js-loop"; then
+            sed -i 's/gum-js-loop/Finalizer/g' "$SERVER_BIN"
+          fi
+          if strings "$SERVER_BIN" | grep -q "frida-thread"; then
+            sed -i 's/frida-thread/Binder_1/g' "$SERVER_BIN"
+          fi
+          if strings "$SERVER_BIN" | grep -q "frida-server"; then
+            sed -i 's/frida-server/surfaceflinger/g' "$SERVER_BIN"
+          fi
+          if strings "$SERVER_BIN" | grep -q "frida-jit"; then
+            sed -i 's/frida-jit/libhwui/g' "$SERVER_BIN"
+          fi
+          if strings "$SERVER_BIN" | grep -q "gmain"; then
+            sed -i 's/gmain/HeapTask/g' "$SERVER_BIN"
+          fi
+          if strings "$SERVER_BIN" | grep -q "gdbus"; then
+            sed -i 's/gdbus/IPCThread/g' "$SERVER_BIN"
+          fi
+          if strings "$SERVER_BIN" | grep -q "re.frida"; then
+            sed -i 's/re.frida/android.sys/g' "$SERVER_BIN"
+          fi
           
           # 清理调试信息并压缩
-          strip --strip-all "$SERVER_BIN" || true
-          upx --best --lzma "$SERVER_BIN" || true
+          strip --strip-all "$SERVER_BIN" 2>/dev/null || true
+          upx --best --lzma "$SERVER_BIN" 2>/dev/null || true
           
           echo "二进制修补完成"
-
-      - name: 生成运行时反检测脚本（集成所有 Hook）
-        run: |
-          mkdir -p out
-          cp frida/build/frida-android-arm64/bin/frida-server out/frida-server
+          # 验证
+          echo "=== 修补后残留特征检查 ==="
+          strings "$SERVER_BIN" | grep -iE "frida|27042|gmain|gdbus|REJECT" || echo "未发现明显特征"
           
+          # 复制到输出目录
+          mkdir -p ../out
+          cp "$SERVER_BIN" ../out/frida-server
+
+      - name: 生成运行时反检测脚本
+        run: |
           cat > out/anti-detect.js << 'EOF'
           // 游戏级运行时对抗脚本
-          // 需在启动 frida-server 后通过 -x 加载
+          // 启动时加载: frida-server -x /path/to/anti-detect.js
           
           // 1. Hook 文件访问（/proc/self/maps, /proc/self/status）
           var openPtr = Module.findExportByName(null, "open");
@@ -169,7 +210,6 @@ jobs:
                   },
                   onLeave: function(retval) {
                       if (this.isSuspicious) {
-                          // 返回 -1 表示打开失败，使检测无法读取
                           retval.replace(-1);
                       }
                   }
@@ -216,7 +256,7 @@ jobs:
                   return this.loadLibrary(libname);
               };
               
-              // Hook 常见检测点：检查路径是否存在
+              // Hook 文件存在性检测
               var File = Java.use("java.io.File");
               File.exists.implementation = function() {
                   var path = this.getAbsolutePath();
