@@ -44,11 +44,11 @@ jobs:
           fetch-depth: 1
           path: frida
 
-      - name: 克隆 Florida 15.2.2
+      - name: 克隆 Florida 16.5.6
         uses: actions/checkout@v4
         with:
           repository: Ylarod/Florida
-          ref: 15.2.2
+          ref: 16.5.6
           submodules: recursive
           fetch-depth: 1
           path: florida
@@ -394,9 +394,7 @@ jobs:
                                   }
                               },
                               onLeave: function(retval) {
-                                  if (this.block) {
-                                      retval.replace(-1);
-                                  }
+                                  if (this.block) retval.replace(-1);
                               }
                           });
                       }
@@ -455,7 +453,7 @@ jobs:
                   if (ptrace) {
                       Interceptor.attach(ptrace, {
                           onLeave: function(retval) {
-                              retval.replace(-1);  // 所有 ptrace 返回失败
+                              retval.replace(-1);
                           }
                       });
                   }
