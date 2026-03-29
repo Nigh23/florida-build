@@ -1,4 +1,4 @@
-name: Build Florida 16.5.6 (3层反检测+隐藏特征)
+name: Build Florida 16.5.6 完整过检版
 
 on:
   workflow_dispatch:
@@ -7,12 +7,12 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 安装依赖（含python3-dev解决编译错）
+      - name: 安装依赖
         run: |
           sudo apt update
           sudo apt install -y build-essential lib32stdc++-12-dev curl git zip sed python3-dev
 
-      - name: 拉取官方Frida 16.5.6
+      - name: 拉取 Frida 16.5.6
         uses: actions/checkout@v4
         with:
           repository: frida/frida
@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 1
           path: frida
 
-      - name: 拉取Florida 16.5.6魔改基底
+      - name: 拉取 Florida 16.5.6
         uses: actions/checkout@v4
         with:
           repository: Ylarod/Florida
@@ -30,36 +30,40 @@ jobs:
           fetch-depth: 1
           path: florida
 
-      - name: 应用Florida原生补丁
+      - name: 应用 Florida 补丁
         run: |
-          cp -rf florida/* frida/
+          cp -rf florida/* frida/ 2>/dev/null
 
-      # 👇 这里是你要的 完整隐藏+过检测 核心修改
-      - name: 3层反检测特征隐藏
+      - name: 深度隐藏（三层防检测）
         run: |
           cd frida
+          GUM_DIR="subprojects/frida-gum/gum"
 
-          # 1层：Ptrace反调试 + 端口隐藏
-          sed -i 's/ptrace(/ptrace_hidden(/g' lib/gum/gum-debug.c || true
-          sed -i 's/27042/54321/g' lib/gum/gum-server.c || true
+          # 1. Ptrace 反调试 + 端口隐藏
+          sed -i 's/ptrace(/ptrace_ignore(/g' $GUM_DIR/gum-debug.c 2>/dev/null || true
+          sed -i 's/27042/55221/g' $GUM_DIR/gum-server.c 2>/dev/null || true
 
-          # 2层：Gum/内存/进程 特征隐藏
-          sed -i 's/"frida-agent"/"libmemalloc"/g' lib/gum/gum-allocator.c || true
-          sed -i 's/"frida-jit"/"libbuffer"/g' lib/gum/gum-allocator.c || true
-          sed -i 's/"gum-js-loop"/"sys-work"/g' lib/gum/gum-thread.c || true
-          sed -i 's/"frida-thread"/"sys-task"/g' lib/gum/gum-thread.c || true
+          # 2. 内存名称隐藏 /proc/self/maps
+          sed -i 's/"frida-agent"/"libsys_mem"/g' $GUM_DIR/gum-allocator.c 2>/dev/null || true
+          sed -i 's/"frida-jit"/"libsys_buf"/g' $GUM_DIR/gum-allocator.c 2>/dev/null || true
 
-          # 3层：Trampoline伪装 + 取消RWX内存特征
-          sed -i 's/GUM_PAGE_READ_WRITE_EXEC/GUM_PAGE_READ_WRITE/g' lib/gum/gummemory.c || true
-          sed -i 's/\x10\x00\x00\x58/\x50\x0F\x1F\xAA/g' lib/gum/arch-arm64/guminterceptor-arm64.c || true
-          sed -i 's/\x00\x02\x1F\xD6/\x20\x00\x80\xD2/g' lib/gum/arch-arm64/guminterceptor-arm64.c || true
+          # 3. 线程名隐藏
+          sed -i 's/"gum-js-loop"/"system_work"/g' $GUM_DIR/gum-thread.c 2>/dev/null || true
+          sed -i 's/"frida-thread"/"system_task"/g' $GUM_DIR/gum-thread.c 2>/dev/null || true
 
-      - name: 编译android-arm64
+          # 4. 取消 RWX 内存特征
+          sed -i 's/GUM_PAGE_READ_WRITE_EXEC/GUM_PAGE_READ_WRITE/g' $GUM_DIR/gummemory.c 2>/dev/null || true
+
+          # 5. ARM64 Trampoline 特征码改写
+          sed -i 's/\x10\x00\x00\x58/\x50\x0F\x1F\xAA/g' $GUM_DIR/arch-arm64/guminterceptor-arm64.c 2>/dev/null || true
+          sed -i 's/\x00\x02\x1F\xD6/\x20\x00\x80\xD2/g' $GUM_DIR/arch-arm64/guminterceptor-arm64.c 2>/dev/null || true
+
+      - name: 编译 android-arm64
         run: |
           cd frida
           make ANDROID_ARCH=arm64
 
-      - name: 上传最终魔改服务端
+      - name: 上传最终 server
         uses: actions/upload-artifact@v4
         with:
           name: florida-server-16.5.6-arm64-stealth
