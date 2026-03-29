@@ -1,4 +1,5 @@
-name: Build Florida 16.5.6 最终稳定版
+name: Build Frida 16.5.6 游戏对抗级 (Server魔改终极版)
+
 on:
   workflow_dispatch:
 
@@ -8,20 +9,25 @@ jobs:
     steps:
       - name: 安装完整编译依赖
         run: |
+          sudo dpkg --add-architecture i386
           sudo apt update
           sudo apt install -y \
             build-essential \
             lib32stdc++-12-dev \
+            lib32z1-dev \
+            libc6-dev-i386 \
             curl git zip sed \
             python3 python3-dev python3-pip \
             libglib2.0-dev \
             ninja-build \
             pkg-config \
-            upx
+            upx \
+            openjdk-11-jdk \
+            valac \
+            clang
 
       - name: 修复Python头文件路径
-        run: |
-          python3 -c "import sysconfig; print(sysconfig.get_paths())"
+        run: python3 -c "import sysconfig; print(sysconfig.get_paths())"
 
       - name: 克隆 Frida 16.5.6
         uses: actions/checkout@v4
@@ -41,61 +47,198 @@ jobs:
           fetch-depth: 1
           path: florida
 
-      - name: 应用Florida补丁
-        run: |
-          cp -rf florida/* frida/ 2>/dev/null
+      - name: 应用 Florida 补丁
+        run: cp -rf florida/* frida/ 2>/dev/null
 
-      - name: 移除frida-python避免编译冲突
+      - name: 移除 frida-python 避免编译冲突
         run: |
           cd frida
-          sed -i '/subproject.*frida-python/d' meson.build || true
+          sed -i 's/^\(.*subproject.*frida-python.*\)$/#\1/' meson.build || true
 
-      - name: 全套去特征修改
+      - name: 游戏级深度去特征修改（源码层全覆盖）
         run: |
           cd frida
           GUM_DIR="subprojects/frida-gum/gum"
-
-          # 端口
-          sed -i 's/27042/59999/g' $GUM_DIR/gum-server.c
-          # maps名称
-          sed -i 's/"frida-agent"/"libsys"/g' $GUM_DIR/gum-allocator.c
-          sed -i 's/"frida-jit"/"libcache"/g' $GUM_DIR/gum-allocator.c
+          CORE_DIR="subprojects/frida-core"
+          
+          # ---------- 基础伪装 ----------
+          # 端口 27042 -> 59999
+          sed -i 's/#define FRIDA_SERVER_PORT 27042/#define FRIDA_SERVER_PORT 59999/' src/server/server.c 2>/dev/null || true
+          # maps 中的库名
+          sed -i 's/"frida-agent"/"libart"/g' $GUM_DIR/gum-allocator.c
+          sed -i 's/"frida-jit"/"libhwui"/g' $GUM_DIR/gum-allocator.c
           # 线程名
-          sed -i 's/"gum-js-loop"/"sys-loop"/g' $GUM_DIR/gum-thread.c
-          sed -i 's/"frida-thread"/"sys-task"/g' $GUM_DIR/gum-thread.c
-          # frida-server 进程名
-          sed -i 's/"frida-server"/"system_server"/g' src/frida-server.c
-          # ptrace 反调试
+          sed -i 's/"gum-js-loop"/"Finalizer"/g' $GUM_DIR/gum-thread.c
+          sed -i 's/"frida-thread"/"Binder_1"/g' $GUM_DIR/gum-thread.c
+          # 进程名
+          sed -i 's/"frida-server"/"surfaceflinger"/g' src/frida-server.c
+          # ptrace 绕过
           sed -i 's/ptrace(/syscall(SYS_ptrace,/g' $GUM_DIR/gum-debug.c
-          # 取消RWX
+          # 取消 RWX
           sed -i 's/GUM_PAGE_READ_WRITE_EXEC/GUM_PAGE_READ_WRITE/g' $GUM_DIR/gummemory.c
+          
+          # ---------- D-Bus 协议彻底伪装 ----------
+          # 修改认证响应 REJECT -> ACCEPT（让扫描器误判）
+          find $CORE_DIR -name "*.vala" -exec sed -i 's/"REJECT"/"ACCEPT"/g' {} \;
+          # 修改所有 "frida" 相关字符串
+          find $CORE_DIR -name "*.vala" -exec sed -i 's/"frida"/"system"/g' {} \;
+          find $CORE_DIR -name "*.vala" -exec sed -i 's/"FRIDA"/"SYSTEM"/g' {} \;
+          # 修改 D-Bus 接口名
+          find $CORE_DIR -name "*.vala" -exec sed -i 's/"re\.frida"/"android\.sys"/g' {} \;
+          find $CORE_DIR -name "*.vala" -exec sed -i 's/"re\.frida\.Helper"/"android\.sys\.Helper"/g' {} \;
+          
+          # ---------- RPC 字符串混淆 ----------
+          RPC_VALA="$CORE_DIR/lib/base/rpc.vala"
+          if [ -f "$RPC_VALA" ]; then
+            sed -i 's/"frida:rpc"/"sys:ipc"/g' "$RPC_VALA"
+            sed -i 's/"frida:auth"/"sys:cred"/g' "$RPC_VALA"
+          fi
+          
+          # ---------- 符号表与入口点混淆 ----------
+          find . -name "*.vala" -o -name "*.c" | xargs sed -i 's/frida_agent_main/android_main/g' 2>/dev/null || true
+          sed -i 's/g_set_prgname ("frida")/g_set_prgname ("android_serv")/g' $GUM_DIR/gum.c 2>/dev/null || true
+          
+          # ---------- IPC 目录隐藏 ----------
+          SERVER_VALA="$CORE_DIR/src/server/server.vala"
+          if [ -f "$SERVER_VALA" ]; then
+            sed -i 's/DEFAULT_DIRECTORY = "frida"/DEFAULT_DIRECTORY = ".sys"/g' "$SERVER_VALA"
+            sed -i 's/"frida-"/"sys-"/g' "$SERVER_VALA"
+          fi
+          
+          # ---------- memfd 匿名文件特征修改 ----------
+          HELPER_VALA="$CORE_DIR/src/frida-helper-backend.vala"
+          if [ -f "$HELPER_VALA" ]; then
+            sed -i 's/"frida"/"jit-cache"/g' "$HELPER_VALA"
+          fi
+          
+          echo "源码修改完成"
 
-      - name: 编译 Android arm64
+      - name: 编译 Android arm64 服务端
         run: |
           cd frida
-          make ANDROID_ARCH=arm64
+          make server-android-arm64
 
-      - name: 提取纯净服务端
+      - name: 后编译二进制深度修补（消除所有残留特征）
+        run: |
+          cd frida
+          SERVER_BIN="build/frida-android-arm64/bin/frida-server"
+          if [ ! -f "$SERVER_BIN" ]; then
+            echo "编译产物未找到，退出"
+            exit 1
+          fi
+          
+          # 使用 sed 直接修改二进制中的字符串（简单可靠）
+          # 注意：替换的字符串长度必须与原字符串相同或更短
+          sed -i 's/frida:rpc/sys:ipc/g' "$SERVER_BIN"
+          sed -i 's/FRIDA/SYSD/g' "$SERVER_BIN"
+          sed -i 's/frida-agent/libart/g' "$SERVER_BIN"
+          sed -i 's/gum-js-loop/Finalizer/g' "$SERVER_BIN"
+          sed -i 's/frida-thread/Binder_1/g' "$SERVER_BIN"
+          sed -i 's/frida-server/surfaceflinger/g' "$SERVER_BIN"
+          sed -i 's/frida-jit/libhwui/g' "$SERVER_BIN"
+          sed -i 's/gmain/HeapTask/g' "$SERVER_BIN"
+          sed -i 's/gdbus/IPCThread/g' "$SERVER_BIN"
+          sed -i 's/re.frida/android.sys/g' "$SERVER_BIN"
+          
+          # 清理调试信息并压缩
+          strip --strip-all "$SERVER_BIN" || true
+          upx --best --lzma "$SERVER_BIN" || true
+          
+          echo "二进制修补完成"
+
+      - name: 生成运行时反检测脚本（集成所有 Hook）
         run: |
           mkdir -p out
-          SERVER=$(find frida/build -name frida-server -type f | head -1)
-          cp "$SERVER" out/frida-server
+          cp frida/build/frida-android-arm64/bin/frida-server out/frida-server
+          
+          cat > out/anti-detect.js << 'EOF'
+          // 游戏级运行时对抗脚本
+          // 需在启动 frida-server 后通过 -x 加载
+          
+          // 1. Hook 文件访问（/proc/self/maps, /proc/self/status）
+          var openPtr = Module.findExportByName(null, "open");
+          if (openPtr) {
+              Interceptor.attach(openPtr, {
+                  onEnter: function(args) {
+                      var path = args[0].readCString();
+                      if (path && path.indexOf("/proc/") !== -1) {
+                          if (path.indexOf("/maps") !== -1 || path.indexOf("/status") !== -1) {
+                              this.isSuspicious = true;
+                          }
+                      }
+                  },
+                  onLeave: function(retval) {
+                      if (this.isSuspicious) {
+                          // 返回 -1 表示打开失败，使检测无法读取
+                          retval.replace(-1);
+                      }
+                  }
+              });
+          }
+          
+          // 2. Hook pthread_setname_np 防止线程名检测
+          var pthread_setname_np = Module.findExportByName(null, "pthread_setname_np");
+          if (pthread_setname_np) {
+              Interceptor.attach(pthread_setname_np, {
+                  onEnter: function(args) {
+                      var name = args[1].readCString();
+                      if (name && (name.indexOf("gmain") !== -1 || name.indexOf("gdbus") !== -1)) {
+                          args[1] = Memory.allocUtf8String("HeapWorker");
+                      }
+                  }
+              });
+          }
+          
+          // 3. Java 层 Hook（如果附加到 Java 进程）
+          Java.perform(function() {
+              // Hook Debug.getNativeLibrarys
+              var Debug = Java.use("android.os.Debug");
+              if (Debug.getNativeLibrarys) {
+                  Debug.getNativeLibrarys.implementation = function() {
+                      var libs = this.getNativeLibrarys();
+                      var filtered = [];
+                      for (var i = 0; i < libs.length; i++) {
+                          var l = libs[i].toLowerCase();
+                          if (l.indexOf("frida") === -1 && l.indexOf("gum") === -1 && l.indexOf("sys") === -1) {
+                              filtered.push(libs[i]);
+                          }
+                      }
+                      return filtered;
+                  };
+              }
+              
+              // Hook System.loadLibrary
+              var System = Java.use("java.lang.System");
+              System.loadLibrary.implementation = function(libname) {
+                  if (libname.toLowerCase().indexOf("frida") !== -1) {
+                      return;
+                  }
+                  return this.loadLibrary(libname);
+              };
+              
+              // Hook 常见检测点：检查路径是否存在
+              var File = Java.use("java.io.File");
+              File.exists.implementation = function() {
+                  var path = this.getAbsolutePath();
+                  if (path && path.indexOf("frida") !== -1) {
+                      return false;
+                  }
+                  return this.exists();
+              };
+          });
+          
+          console.log("[Anti] Runtime hooks installed.");
+          EOF
+          
+          echo "运行时脚本生成完毕"
 
-      - name: 瘦身strip
-        run: |
-          strip --strip-all out/frida-server || true
-
-      - name: UPX压缩
-        run: |
-          upx --best --lzma out/frida-server || true
-
-      - name: 打包
+      - name: 打包最终产物
         run: |
           cd out
-          zip florida-server-arm64.zip frida-server
-
-      - name: 上传最终服务端
+          zip frida-game-moded.zip frida-server anti-detect.js
+          
+      - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: florida-server-arm64
-          path: out/florida-server-arm64.zip
+          name: frida-game-moded
+          path: out/frida-game-moded.zip
