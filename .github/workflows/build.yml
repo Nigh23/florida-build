@@ -1,0 +1,48 @@
+name: Build Florida 16.5.6 arm64 (Anti-Cheat + Anti-Debug)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential lib32stdc++-12-dev curl git zip sed
+
+      - name: Clone Florida 16.5.6
+        uses: actions/checkout@v4
+        with:
+          repository: Ylarod/Florida
+          ref: 16.5.6
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Obfuscate & anti-debug patch
+        run: |
+          # 替换敏感字符串
+          find . -type f \( -name "*.[ch]" -o -name "*.vala" \) | xargs sed -i \
+            -e 's/frida/system_service/g' \
+            -e 's/gum/kernel_log/g' \
+            -e 's/GumInterceptor/SysMonitor/g' \
+            -e 's/Frida/SystemDaemon/g'
+          # 修改默认端口
+          sed -i 's/27042/53729/g' lib/gum/gumserver.c
+          # 魔改 ARM64 Hook 指令特征
+          sed -i 's/\x10\x00\x00\x58/\x11\x00\x00\x58/g' lib/gum/arch-arm64/guminterceptor-arm64.c
+          sed -i 's/\x00\x02\x1F\xD6/\x20\x02\x1F\xD6/g' lib/gum/arch-arm64/guminterceptor-arm64.c
+          # 关闭调试标记
+          sed -i 's/gum_script_pinning_breakpoints = TRUE/gum_script_pinning_breakpoints = FALSE/g' lib/frida/script.c
+
+      - name: Build for android-arm64
+        run: |
+          make ANDROID_ARCH=arm64
+
+      - name: Upload obfuscated frida-server
+        uses: actions/upload-artifact@v4
+        with:
+          name: florida-server-16.5.6-android-arm64
+          path: build/frida-android-arm64/bin/frida-server
+
