@@ -1,4 +1,4 @@
-name: 🔥 Frida 16.5.6 手游测试稳定版（修复编译+过检测）
+name: 🔥 Frida 16.5.6 手游测试稳定版（修复releng + 过检测）
 
 on:
   workflow_dispatch:  # 允许手动触发
@@ -42,18 +42,24 @@ jobs:
           fetch-depth: 0
           path: frida
 
-      - name: 🧹 初始化编译环境（关键：修复releng）
+      - name: 🛠️ 手动配置 Android NDK 环境（兼容16.5.6）
         run: |
           cd frida
-          # 初始化官方编译环境
-          ./releng/init-ubuntu
-          # 安装 Android NDK（Frida 官方依赖）
-          ./releng/setup-android-ndk
+          # 安装官方依赖的 Python 库
+          pip3 install -r requirements.txt || true
+          # 手动安装 Android NDK (r25b)
+          mkdir -p build/android-ndk
+          cd build/android-ndk
+          # 下载 NDK (Frida 16.5.6 兼容版本)
+          wget -q https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
+          unzip -q android-ndk-r25b-linux.zip
+          # 配置环境变量 (告诉Frida去哪里找NDK)
+          echo "ANDROID_NDK_PATH=$PWD/android-ndk-r25b" >> $GITHUB_ENV
 
       - name: ⚠️ 彻底禁用 frida-python（防止编译崩溃）
         run: |
           cd frida
-          # 直接删除 frida-python 相关配置，彻底避免编译冲突
+          # 直接删除目录，彻底避免编译冲突
           rm -rf subprojects/frida-python
           sed -i '/frida-python/d' meson.build || true
 
@@ -82,12 +88,13 @@ jobs:
       - name: 🔨 编译 Android arm64 服务端
         run: |
           cd frida
-          # 配置交叉编译参数
+          # 配置编译参数
           export CFLAGS="-O2 -g0 -fvisibility=hidden -fno-unwind-tables"
           export CXXFLAGS="$CFLAGS"
           export LDFLAGS="-Wl,--gc-sections,-z,relro,-z,now"
-          
-          # 使用官方目标编译
+          # 指定 NDK 路径
+          export ANDROID_NDK=$ANDROID_NDK_PATH/android-ndk-r25b
+          # 使用官方目标编译 (Frida 16.5.6 官方命令)
           make server-android-arm64 -j$(nproc)
 
       - name: 🧹 二进制清理与去特征
