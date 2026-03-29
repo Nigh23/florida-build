@@ -35,11 +35,11 @@ jobs:
       - name: 修复 Python 头文件路径
         run: python3 -c "import sysconfig; print(sysconfig.get_paths())"
 
-      # ========== 关键：升级 Meson 到 1.5.1（解决语法错误） ==========
+      # ========== 关键：升级 Meson 到 1.5.1 ==========
       - name: 升级 Meson 以支持 Frida 16.5.6
         run: |
           pip3 install --upgrade meson==1.5.1
-          meson --version
+          echo "✅ Meson 版本: $(meson --version)"
 
       - name: 克隆 Frida 16.5.6（含子模块）
         uses: actions/checkout@v4
@@ -190,10 +190,12 @@ jobs:
           done
           echo "✓ 编译配置优化完成"
 
-      # ========== 编译阶段 ==========
+      # ========== 编译阶段（关键修复：禁用自带 Meson） ==========
       - name: 编译 Android arm64 服务端
         run: |
           cd frida
+          # 禁用自带的旧版 Meson，强制使用系统安装的 Meson 1.5.1
+          mv releng/meson releng/meson.bak 2>/dev/null || true
           export CFLAGS="-O1 -g0 -fno-inline -fno-reorder-blocks -fno-optimize-sibling-calls -fvisibility=hidden -ffunction-sections -fdata-sections"
           export CXXFLAGS="$CFLAGS"
           export LDFLAGS="-Wl,--gc-sections,-z,relro,-z,now,--no-merge-exidx-entries"
