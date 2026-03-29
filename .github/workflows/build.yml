@@ -1,4 +1,4 @@
-name: Frida 16.5.6 手游测试稳定版
+name: Frida 16.5.6 极简稳定版
 on:
   workflow_dispatch:
 
@@ -8,12 +8,10 @@ jobs:
     steps:
       - name: 安装依赖
         run: |
-          sudo dpkg --add-architecture i386
           sudo apt update
-          sudo apt install -y build-essential lib32stdc++-12-dev lib32z1-dev libc6-dev-i386 curl git zip python3 python3-pip libglib2.0-dev ninja-build pkg-config valac gcc-multilib g++-multilib binutils
-          pip3 install --upgrade pip
+          sudo apt install -y build-essential lib32stdc++-12-dev lib32z1-dev curl git python3 ninja-build pkg-config valac gcc-multilib g++-multilib
 
-      - name: 克隆 Frida 16.5.6
+      - name: 克隆Frida 16.5.6
         uses: actions/checkout@v4
         with:
           repository: frida/frida
@@ -21,53 +19,30 @@ jobs:
           submodules: recursive
           path: frida
 
-      - name: 强制屏蔽所有 frida-python
+      - name: 轻度特征修改
         run: |
           cd frida
-          rm -rf subprojects/frida-python
-          find . -name 'meson.build' -type f | xargs sed -i '/frida-python/d' 2>/dev/null
-          find . -name '*.wrap' -type f | xargs sed -i '/frida-python/d' 2>/dev/null
+          sed -i 's/27042/31337/g' $(grep -rl 27042 --include="*.c" --include="*.h" .)
+          sed -i 's/"frida-server"/"system_daemon"/g' frida-server/frida-server.c
 
-      - name: 特征隐藏（手游防检测）
+      - name: 编译Android arm64
         run: |
           cd frida
-          find . -name "*.[c|h|vala]" | xargs sed -i 's/27042/31337/g' 2>/dev/null
-          find . -name "*.[c|h|vala]" | xargs sed -i 's/"frida"/"sysservice"/g' 2>/dev/null
-          find . -name "*.[c|h|vala]" | xargs sed -i 's/"gum-/"/g' 2>/dev/null
-          sed -i 's/"frida-server"/"surfaceflingerd"/g' frida-server/frida-server.c
-          sed -i 's/"gum-js-loop"/"system_work"/g' frida-gum/gum/gum-thread.c
-
-      - name: 官方脚本编译 Android arm64
-        run: |
-          cd frida
-          # 官方编译方式，自动配置交叉环境 → 这是关键修复
+          chmod +x releng/*
           ./releng/build-android arm64
 
-      - name: 提取服务端并清理
+      - name: 提取产物
         run: |
           mkdir -p out
-          SERVER=$(find frida/build -name frida-server -type f | grep android-arm64)
-          strip --strip-all $SERVER
-          cp $SERVER out/frida-server
-
-      - name: 生成反检测脚本
-        run: |
-          cat > out/anti_detect.js <<'EOF'
-          setTimeout(()=>{
-            console.log("[+] 防检测启动");
-            ["exit","exit_group","kill"].forEach(f=>{
-              let a=Module.findExportByName(null,f);a&&Interceptor.replace(a,new NativeCallback(()=>-1,'int',[]))
-            })
-          },500)
-          EOF
+          find frida/build/android-arm64/bin -name frida-server -exec cp {} out/ \;
 
       - name: 打包
         run: |
           cd out
-          zip frida1656.zip frida-server anti_detect.js
+          zip frida1656_fix.zip frida-server
 
-      - name: 上传产物
+      - name: 上传
         uses: actions/upload-artifact@v4
         with:
-          name: frida-build
-          path: out/frida1656.zip
+          name: frida-final
+          path: out/frida1656_fix.zip
