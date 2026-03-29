@@ -1,4 +1,4 @@
-name: Build Frida 16.5.6 终极隐身版 (语法修复版)
+name: Build Frida 16.5.6 终极隐身版 (内存优化版)
 
 on:
   workflow_dispatch:
@@ -7,6 +7,15 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
+      - name: 优化系统内存 (开启 Swap)
+        run: |
+          sudo swapoff -a
+          sudo dd if=/dev/zero of=/swapfile bs=1G count=8
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
       - name: 安装编译依赖
         run: |
           sudo dpkg --add-architecture i386
@@ -27,10 +36,9 @@ jobs:
           git clone --recursive --depth 1 -b 16.5.6 https://github.com/Ylarod/Florida florida
           cp -rvf florida/* frida/ || true
 
-      - name: 【第一层至第三层】源码混淆 (保持原逻辑, 限制范围)
+      - name: 【第一层至第三层】源码混淆 (原逻辑)
         run: |
           cd frida
-          # 仅针对源码目录混淆，避开编译脚本目录 releng，防止破坏编译命令
           TARGET_DIRS="frida-gum frida-core server src"
           
           # 1. 隐藏 Hook 数据结构
@@ -42,7 +50,7 @@ jobs:
             sed -i 's/gum_interceptor_attach/gum_system_monitor_register/g' "$G_INTER"
           fi
           
-          # 2. 基础字符串混淆 (限制在源码目录，防止破坏 meson.build 中的变量)
+          # 2. 基础字符串混淆 (限制范围)
           find $TARGET_DIRS -type f \( -name "*.c" -o -name "*.h" -o -name "*.vala" \) 2>/dev/null | xargs sed -i \
             -e 's/#define FRIDA_SERVER_PORT 27042/#define FRIDA_SERVER_PORT 59999/g' \
             -e 's/"frida"/"arm64v8"/g' \
@@ -59,24 +67,26 @@ jobs:
             sed -i 's/ptrace(/syscall(SYS_ptrace,/g' "$GUM_DIR"/gum-debug.c 2>/dev/null || true
           fi
 
-      - name: 【第四层】编译参数注入 (修复语法错误位置)
+      - name: 【第四层】编译参数注入
         run: |
           cd frida
-          # 修复点：将参数注入到 project() 定义块结束之后的下一行，而不是中间
-          # 这行 sed 会在包含 'strip=true' 的行（通常是 project 定义的末尾）后面插入全局参数
-          sed -i "/strip=true/a \ \nadd_global_arguments('-O1', '-fno-inline', '-fvisibility=hidden', '-ffunction-sections', '-fdata-sections', language: 'c')" meson.build
+          # 确保注入位置正确
+          sed -i "/strip: true,/a \ \nadd_global_arguments('-O1', '-fno-inline', '-fvisibility=hidden', '-ffunction-sections', '-fdata-sections', language: 'c')" meson.build
 
-      - name: 编译 Android arm64 服务端
+      - name: 编译 Android arm64 服务端 (防 OOM 模式)
         run: |
           cd frida
+          # 关键优化：使用 -j 2 限制并行数，防止内存耗尽。禁用不需要的组件。
           export CFLAGS="-O1 -fvisibility=hidden"
-          # 如果 make 失败，输出最后 100 行编译日志供调试
-          make server-android-arm64 || (tail -n 100 build/meson-logs/meson-log.txt && exit 1)
+          # 禁用 Python/Node 等不相关组件以减少内存开销
+          sed -i "s/option('python',/option('python_disabled',/" meson_options.txt || true
+          
+          # 执行编译，NINJA_FLAGS="-j 2" 是为了在 7G 内存限制下稳定完成
+          make server-android-arm64 NINJA_FLAGS="-j 2" || (free -h && tail -n 100 build/meson-logs/meson-log.txt && exit 1)
 
       - name: 【第五层】后编译二进制混淆
         run: |
           cd frida
-          # 动态查找二进制位置
           SERVER_BIN=$(find build/ -name frida-server -type f | grep android-arm64 | head -n 1)
           
           if [ -z "$SERVER_BIN" ]; then
@@ -89,12 +99,12 @@ jobs:
           cp "$SERVER_BIN" ../out/frida-server-final
           cd ../out
           
-          # 二进制混淆 (原样保留)
+          # 二进制混淆 (原逻辑)
           strip --strip-all frida-server-final
           python3 -c "f=open('frida-server-final','r+b'); f.seek(7); f.write(b'\x00\x00'); f.close()"
           upx --best --lzma frida-server-final || true
           
-          # 生成对抗脚本 (原样保留)
+          # 生成对抗脚本 (原逻辑)
           cat > anti-detect.js << 'EOF'
           function initialize() {
               var prctl = Module.findExportByName(null, "prctl");
@@ -106,7 +116,7 @@ jobs:
           setTimeout(initialize, 1000);
           EOF
 
-      - name: 生成打包与上传
+      - name: 打包与上传
         run: |
           cd out
           zip -r frida-ultimate.zip frida-server-final anti-detect.js
