@@ -1,4 +1,4 @@
-name: Build Frida 16.5.6 终极隐身版 (完全修复)
+name: Build Frida 16.5.6 终极隐身版 (编译器修复)
 
 on:
   workflow_dispatch:
@@ -7,28 +7,64 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 安装完整编译依赖
+      - name: 【修复】安装完整的编译工具链
         run: |
-          sudo dpkg --add-architecture i386
-          sudo apt update
-          sudo apt install -y \
+          echo "=== 安装编译工具链 ==="
+          
+          # 更新包管理器
+          sudo apt-get update
+          
+          # 安装基础编译工具（确保 gcc/clang 正确安装）
+          sudo apt-get install -y \
             build-essential \
-            lib32stdc++-12-dev \
-            lib32z1-dev \
+            gcc \
+            g++ \
+            gcc-multilib \
+            g++-multilib \
+            clang \
+            clang-tools \
+            llvm \
+            llvm-dev
+          
+          # 安装 32 位支持
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y \
             libc6-dev-i386 \
-            curl git zip sed \
-            python3 python3-dev python3-pip \
+            lib32gcc-12-dev \
+            lib32stdc++-12-dev \
+            lib32z1-dev
+          
+          # 安装其他必要工具
+          sudo apt-get install -y \
+            curl \
+            git \
+            zip \
+            sed \
+            python3 \
+            python3-dev \
+            python3-pip \
             libglib2.0-dev \
             ninja-build \
             pkg-config \
             upx \
             openjdk-11-jdk \
             valac \
-            clang \
-            llvm-14 \
-            gcc-multilib \
-            g++-multilib \
             binutils
+          
+          # 验证编译器安装
+          echo ""
+          echo "【验证编译器】"
+          which gcc
+          which g++
+          which clang
+          which cc
+          
+          gcc --version | head -1
+          g++ --version | head -1
+          clang --version | head -1
+          
+          echo "✓ 编译工具链安装完成"
 
       - name: 修复 Python 头文件路径
         run: python3 -c "import sysconfig; print(sysconfig.get_paths())"
@@ -155,31 +191,75 @@ jobs:
           
           echo "✓ GUM 层隐藏完成"
 
-      - name: 编译 Android arm64 服务端 (诊断版)
+      - name: 【关键】编译前检查
+        run: |
+          cd frida
+          
+          echo "=== 编译前检查 ==="
+          
+          # 检查编译器
+          echo "【1】检查编译器..."
+          which gcc || echo "⚠ gcc 不在 PATH 中"
+          which cc || echo "⚠ cc 不在 PATH 中"
+          gcc --version | head -1
+          
+          # 检查编译工具
+          echo ""
+          echo "【2】检查编译工具..."
+          which ninja || echo "⚠ ninja 未找到"
+          which pkg-config || echo "⚠ pkg-config 未找到"
+          which valac || echo "⚠ valac 未找到"
+          
+          # 检查依赖库
+          echo ""
+          echo "【3】检查依赖库..."
+          pkg-config --exists glib-2.0 && echo "✓ glib-2.0 已安装" || echo "✗ glib-2.0 缺失"
+          pkg-config --exists gio-2.0 && echo "✓ gio-2.0 已安装" || echo "✗ gio-2.0 缺失"
+          
+          # 检查 Java
+          echo ""
+          echo "【4】检查 Java..."
+          which java || echo "⚠ Java 未找到"
+          java -version 2>&1 | head -1 || true
+          
+          echo ""
+          echo "✓ 编译前检查完成"
+
+      - name: 【修复】编译 Android arm64 (with 完整日志)
         run: |
           cd frida
           
           echo "=== 开始编译 ==="
           
           # 设置编译环境变量
+          export CC=gcc
+          export CXX=g++
           export CFLAGS="-O1 -g0 -fno-inline -fno-reorder-blocks -fno-optimize-sibling-calls -fvisibility=hidden -ffunction-sections -fdata-sections"
           export CXXFLAGS="$CFLAGS"
           export LDFLAGS="-Wl,--gc-sections,-z,relro,-z,now,--no-merge-exidx-entries"
           
+          echo "CC=$CC"
+          echo "CXX=$CXX"
           echo "CFLAGS=$CFLAGS"
           echo ""
           
-          # 执行编译
+          # 执行编译（带完整日志）
           if make server-android-arm64 2>&1 | tee build.log; then
             echo ""
-            echo "✓ 编译成功！"
+            echo "✓✓✓ 编译成功！✓✓✓"
           else
             echo ""
-            echo "[!] 编译失败，输出日志："
-            tail -100 build.log
+            echo "[!] 编译失败"
             echo ""
-            echo "[!] 查看 meson 日志："
-            [ -f build/meson-logs/meson-log.txt ] && tail -50 build/meson-logs/meson-log.txt || echo "未找到 meson 日志"
+            echo "【编译错误信息】"
+            tail -200 build.log
+            echo ""
+            echo "【Meson 详细日志】"
+            if [ -f build/meson-logs/meson-log.txt ]; then
+              tail -100 build/meson-logs/meson-log.txt
+            else
+              echo "未找到 meson-log.txt"
+            fi
             exit 1
           fi
 
@@ -190,70 +270,44 @@ jobs:
           
           echo "=== 编译产物诊断 ==="
           
-          # 列出 build 目录结构
-          echo "【1】build 目录内容："
-          find build -type f -name "*frida*" -o -name "*server*" 2>/dev/null | head -20 || echo "未找到相关文件"
+          # 方案 1: 标准查找
+          echo "【方案 1】标准路径查找..."
+          SERVER_BIN=$(find build -name "frida-server" -type f 2>/dev/null | head -1)
+          if [ -n "$SERVER_BIN" ]; then
+            echo "✓ 找到: $SERVER_BIN"
+            exit 0
+          fi
+          
+          # 方案 2: ARM64 ELF 查找
+          echo "【方案 2】ARM64 ELF 查找..."
+          SERVER_BIN=$(find build -type f -executable 2>/dev/null | xargs file 2>/dev/null | grep "ELF.*ARM aarch64" | cut -d: -f1 | head -1)
+          if [ -n "$SERVER_BIN" ]; then
+            echo "✓ 找到: $SERVER_BIN"
+            exit 0
+          fi
+          
+          # 如果都没找到
+          echo "[!] 未找到 frida-server"
+          echo ""
+          echo "【build 目录内容】"
+          find build -type f -name "*frida*" -o -name "*server*" 2>/dev/null | head -20
           
           echo ""
-          echo "【2】递归搜索所有可执行文件："
-          find build -type f -executable 2>/dev/null | grep -E "(frida|server)" | head -20 || echo "未找到可执行文件"
-          
-          echo ""
-          echo "【3】搜索所有 ELF 二进制："
-          find build -type f -exec file {} \; 2>/dev/null | grep -i "elf" | head -20 || echo "未找到 ELF 二进制"
-          
-          echo ""
-          echo "【4】完整的 build 目录树 (前 50 行)："
-          find build -type f 2>/dev/null | head -50
+          echo "【完整编译日志】"
+          tail -50 build.log
 
-      - name: 【第三层】后编译混淆 (灵活查找)
+      - name: 【第三层】后编译混淆
         run: |
           cd frida
           
           echo "=== 后编译混淆开始 ==="
           
-          # ========== 灵活查找 frida-server ==========
-          echo "【0】查找 frida-server..."
+          # 灵活查找
+          SERVER_BIN=$(find build -name "frida-server" -type f 2>/dev/null | head -1)
           
-          # 尝试多个搜索路径
-          SERVER_BIN=""
-          
-          # 方案 1: 标准路径
-          if [ -z "$SERVER_BIN" ]; then
-            SERVER_BIN=$(find build -name "frida-server" -type f 2>/dev/null | head -1)
-            [ -n "$SERVER_BIN" ] && echo "找到 (标准路径): $SERVER_BIN"
-          fi
-          
-          # 方案 2: 任何包含 server 的可执行文件
-          if [ -z "$SERVER_BIN" ]; then
-            SERVER_BIN=$(find build -type f -executable 2>/dev/null | xargs file 2>/dev/null | grep "ELF.*ARM aarch64" | cut -d: -f1 | head -1)
-            [ -n "$SERVER_BIN" ] && echo "找到 (ARM64 ELF): $SERVER_BIN"
-          fi
-          
-          # 方案 3: 最新编译的 ARM64 ELF
-          if [ -z "$SERVER_BIN" ]; then
-            SERVER_BIN=$(find build -type f -executable 2>/dev/null | xargs file 2>/dev/null | grep "ELF.*ARM" | cut -d: -f1 | sort -t_ -k1nr | head -1)
-            [ -n "$SERVER_BIN" ] && echo "找到 (ARM ELF): $SERVER_BIN"
-          fi
-          
-          # 方案 4: 直接在 build/release 或类似目录
-          if [ -z "$SERVER_BIN" ]; then
-            SERVER_BIN=$(find build -path "*/release/*" -o -path "*/dist/*" -name "*server*" 2>/dev/null | head -1)
-            [ -n "$SERVER_BIN" ] && echo "找到 (release/dist): $SERVER_BIN"
-          fi
-          
-          # 如果还是找不到，尝试编译输出文件名
-          if [ -z "$SERVER_BIN" ]; then
-            echo "[!] 未找到 frida-server，尝试最后的搜索..."
-            ls -lah build/
-            find build -type f -size +1M 2>/dev/null | head -10
-          fi
-          
-          # 检查是否找到
           if [ -z "$SERVER_BIN" ] || [ ! -f "$SERVER_BIN" ]; then
-            echo "[!] 错误：仍然无法找到 frida-server"
-            echo "[!] 编译可能失败，检查编译日志："
-            [ -f build.log ] && tail -50 build.log
+            echo "[!] 错误：无法找到 frida-server"
+            echo "[!] 编译可能失败，请查看上面的编译日志"
             exit 1
           fi
           
@@ -262,10 +316,7 @@ jobs:
           echo "处理二进制: $SERVER_BIN"
           cp "$SERVER_BIN" ../out/frida-server-final
           
-          FILE_SIZE=$(stat -f%z "../out/frida-server-final" 2>/dev/null || stat -c%s "../out/frida-server-final")
-          echo "✓ 复制完成 (大小: $FILE_SIZE bytes)"
-          
-          # ========== 1. 字符串深度混淆 ==========
+          # 1. 字符串深度混淆
           echo "【1】字符串替换..."
           sed -i 's/gum_interceptor/gum_system_mon/g' ../out/frida-server-final 2>/dev/null || true
           sed -i 's/gum_system_monitor_register/system_register/g' ../out/frida-server-final 2>/dev/null || true
@@ -276,16 +327,12 @@ jobs:
           sed -i 's/27042/65535/g' ../out/frida-server-final 2>/dev/null || true
           sed -i 's/gmain/GCWorker/g' ../out/frida-server-final 2>/dev/null || true
           sed -i 's/gdbus/DBusWorker/g' ../out/frida-server-final 2>/dev/null || true
-          sed -i 's/"listener"/"handler"/g' ../out/frida-server-final 2>/dev/null || true
-          sed -i 's/"probe"/"event"/g' ../out/frida-server-final 2>/dev/null || true
-          sed -i 's/"attach"/"bind"/g' ../out/frida-server-final 2>/dev/null || true
           echo "✓ 字符串替换完成"
           
-          # ========== 2. ELF 清理 ==========
+          # 2. ELF 清理
           echo "【2】ELF 清理..."
           strip --strip-all ../out/frida-server-final 2>/dev/null || true
           strip -s --discard-all ../out/frida-server-final 2>/dev/null || true
-          
           objcopy --strip-all \
                   --remove-section=.comment \
                   --remove-section=.note.gnu.build-id \
@@ -295,11 +342,10 @@ jobs:
                   ../out/frida-server-final 2>/dev/null || true
           echo "✓ ELF 清理完成"
           
-          # ========== 3. ELF 头匿名化 ==========
+          # 3. ELF 头匿名化
           echo "【3】ELF 头匿名化..."
           python3 << 'PYSCRIPT'
           import struct
-          
           try:
               with open("../out/frida-server-final", "r+b") as f:
                   f.seek(7)
@@ -309,15 +355,15 @@ jobs:
               print(f"ELF 匿名化失败: {e}")
           PYSCRIPT
           
-          # ========== 4. UPX 压缩 ==========
+          # 4. UPX 压缩
           echo "【4】UPX 压缩..."
           if command -v upx &> /dev/null; then
             upx --best --lzma ../out/frida-server-final 2>/dev/null && echo "✓ UPX 压缩完成" || echo "⚠ UPX 压缩失败"
           else
-            echo "⚠ UPX 未安装，跳过压缩"
+            echo "⚠ UPX 未安装，跳过"
           fi
           
-          # ========== 5. 随机填充 ==========
+          # 5. 随机填充
           echo "【5】随机填充..."
           python3 << 'PADDING'
           import os
@@ -329,19 +375,8 @@ jobs:
               print(f"填充失败: {e}")
           PADDING
           
-          # ========== 6. 验证 ==========
-          echo "【6】特征验证..."
-          if strings ../out/frida-server-final 2>/dev/null | grep -iE "frida|interceptor|listener|probe|27042" | head -5; then
-            echo "[!] 有残留特征（这是正常的，因为字符串已混淆）"
-          else
-            echo "✓ 已隐藏主要特征"
-          fi
-          
-          # 最终信息
-          FINAL_SIZE=$(stat -f%z "../out/frida-server-final" 2>/dev/null || stat -c%s "../out/frida-server-final")
           echo ""
           echo "✓ 后编译混淆完成"
-          echo "  最终大小: $FINAL_SIZE bytes"
 
       - name: 生成反检测脚本
         run: |
@@ -498,7 +533,6 @@ jobs:
           
           echo "=== 最终打包 ==="
           
-          # 验证产物
           if [ ! -f frida-server-final ]; then
             echo "[!] 错误：frida-server-final 不存在"
             exit 1
@@ -508,7 +542,6 @@ jobs:
           file frida-server-final
           ls -lh frida-server-final
           
-          # 打包
           zip -q frida-ultimate.zip frida-server-final anti-detect-ultimate.js
           sha256sum frida-ultimate.zip > frida-ultimate.zip.sha256
           
