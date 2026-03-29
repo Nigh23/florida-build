@@ -1,4 +1,4 @@
-name: Build Frida 15.2.2 终极隐身版 (完全对抗 + Hook 隐藏 + 深度混淆)
+name: Build Frida 16.5.6 终极隐身版 (完全对抗 + Hook 隐藏 + 深度混淆)
 
 on:
   workflow_dispatch:
@@ -35,11 +35,11 @@ jobs:
       - name: 修复 Python 头文件路径
         run: python3 -c "import sysconfig; print(sysconfig.get_paths())"
 
-      - name: 克隆 Frida 15.2.2（含子模块）
+      - name: 克隆 Frida 16.5.6（含子模块）
         uses: actions/checkout@v4
         with:
           repository: frida/frida
-          ref: 15.2.2
+          ref: 16.5.6
           submodules: recursive
           fetch-depth: 1
           path: frida
@@ -394,7 +394,9 @@ jobs:
                                   }
                               },
                               onLeave: function(retval) {
-                                  if (this.block) retval.replace(-1);
+                                  if (this.block) {
+                                      retval.replace(-1);
+                                  }
                               }
                           });
                       }
@@ -453,7 +455,7 @@ jobs:
                   if (ptrace) {
                       Interceptor.attach(ptrace, {
                           onLeave: function(retval) {
-                              retval.replace(-1);
+                              retval.replace(-1);  // 所有 ptrace 返回失败
                           }
                       });
                   }
@@ -510,7 +512,7 @@ jobs:
                   
                   if (CONFIG.DEBUG) console.log("[+] Hook 链路已隐藏");
               } catch(e) {
-                  console.log("[-] Hook 隐藏失败:", e);
+                  if (CONFIG.DEBUG) console.log("[-] Hook 隐藏失败:", e);
               }
           }
           
