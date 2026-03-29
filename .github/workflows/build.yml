@@ -1,4 +1,4 @@
-name: Build Florida 16.5.6 (Stealth Hook - No Break Function)
+name: Build Florida 16.5.6 (Stealth Hook - Clean Build)
 
 on:
   workflow_dispatch:
@@ -7,10 +7,11 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Install dependencies
+      - name: Install full build dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential lib32stdc++-12-dev curl git zip sed
+          sudo apt install -y build-essential lib32stdc++-12-dev curl git zip sed \
+              python3-dev python3-pip libpython3-dev
 
       - name: Clone Frida 16.5.6
         uses: actions/checkout@v4
@@ -30,40 +31,31 @@ jobs:
           fetch-depth: 1
           path: florida
 
-      - name: Apply Florida
+      - name: Apply Florida files
         run: |
           cp -rf florida/* frida/ 2>/dev/null || true
 
-      # 只改【Hook行为检测点】，保留100%功能
-      - name: Stealth Patch (Functional + Anti-Scan)
+      # 极小、安全、不破坏功能的隐身补丁
+      - name: Minimal stealth patch
         run: |
           cd frida
 
-          # 1. ARM64 trampoline 替换标准特征指令（保留功能，只改码）
-          sed -i 's/LDR X16, #imm/MOV X16, #0x1234/g' lib/gum/arch-arm64/guminterceptor-arm64.c || true
-          sed -i 's/BR X16/NOP; BR X16/g' lib/gum/arch-arm64/guminterceptor-arm64.c || true
+          # 1. 隐藏 frida-agent 名称
+          sed -i 's/"frida-agent"/"liballoc"/g' lib/gum/gum-allocator.c 2>/dev/null || true
 
-          # 2. 内存权限：避免连续RWX，改为先RW后RX（消除内存特征）
-          sed -i 's/mprotect.*RWX/mprotect(RW)/g' lib/gum/gummemory.c || true
-          sed -i 's/GUM_PAGE_READ_WRITE_EXEC/GUM_PAGE_READ_WRITE/g' lib/gum/gummemory.c || true
+          # 2. 去掉默认端口特征
+          sed -i 's/27042/51234/g' lib/gum/gum-server.c 2>/dev/null || true
 
-          # 3. 隐藏 maps 名称（frida-agent → 系统名称）
-          sed -i 's/"frida-agent"/"libmemalloc"/g' lib/gum/gum-allocator.c || true
-          sed -i 's/"frida-jit"/"libjitbuf"/g' lib/gum/gum-allocator.c || true
-
-          # 4. 弱化代码段patch痕迹（不删除功能，只降低特征）
-          sed -i 's/gum_memory_make_tx/gum_memory_make_rx/g' lib/gum/gummemory.c || true
-
-          # 5. 清除ptrace调用痕迹（不屏蔽功能，只隐藏调用）
-          sed -i 's/ptrace(/syscall(SYS_ptrace, /g' lib/gum/gum-debug.c || true
+          # 3. 弱化内存特征，不使用全局 RWX
+          sed -i 's/GUM_PAGE_READ_WRITE_EXEC/GUM_PAGE_READ_WRITE/g' lib/gum/gummemory.c 2>/dev/null || true
 
       - name: Build android-arm64
         run: |
           cd frida
           make ANDROID_ARCH=arm64
 
-      - name: Upload server
+      - name: Upload frida-server
         uses: actions/upload-artifact@v4
         with:
-          name: florida-server-16.5.6-arm64-stealth
+          name: florida-server-16.5.6-arm64
           path: frida/build/frida-android-arm64/bin/frida-server
