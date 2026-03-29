@@ -1,4 +1,4 @@
-name: Build Florida 16.5.6 (可下载版 - 完整过检)
+name: Build Florida 16.5.6 (自动路径查找版)
 
 on:
   workflow_dispatch:
@@ -61,13 +61,17 @@ jobs:
           cd frida
           make ANDROID_ARCH=arm64
 
-      - name: 检查编译产物（确保 frida-server 存在）
+      # 🔥 关键：自动查找 frida-server 真实路径
+      - name: 查找 frida-server 路径
+        id: find_server
         run: |
           cd frida
-          ls -la build/frida-android-arm64/bin/
+          SERVER_PATH=$(find build -name "frida-server" | head -1)
+          echo "server_path=$SERVER_PATH" >> $GITHUB_OUTPUT
+          echo "找到 frida-server 路径: $SERVER_PATH"
 
       - name: 上传可下载的 frida-server
         uses: actions/upload-artifact@v4
         with:
           name: florida-server-16.5.6-arm64
-          path: frida/build/frida-android-arm64/bin/frida-server
+          path: frida/${{ steps.find_server.outputs.server_path }}
