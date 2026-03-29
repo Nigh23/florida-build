@@ -1,4 +1,4 @@
-name: Frida 16.5.6 手游测试增强版
+name: Frida 16.5.6 手游测试增强版（可编译）
 
 on:
   workflow_dispatch:
@@ -6,8 +6,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    steps>
-      - name: 安装编译环境
+    steps:
+      - name: 安装编译依赖
         run: |
           sudo dpkg --add-architecture i386
           sudo apt update
@@ -15,8 +15,9 @@ jobs:
             build-essential lib32stdc++-12-dev lib32z1-dev libc6-dev-i386 \
             curl git zip python3 python3-pip libglib2.0-dev ninja-build pkg-config \
             valac clang llvm-14 gcc-multilib g++-multilib binutils
+          pip3 install --upgrade pip
 
-      - name: 拉取 Frida 16.5.6
+      - name: 克隆 Frida 16.5.6 源码
         uses: actions/checkout@v4
         with:
           repository: frida/frida
@@ -25,43 +26,39 @@ jobs:
           fetch-depth: 1
           path: frida
 
-      - name: 禁用 frida-python 防止编译失败
+      - name: 禁用 frida-python 避免编译冲突
         run: |
           cd frida
           sed -i 's/^subproject.*frida-python/#&/' meson.build
 
-      - name: 深度特征清理（手游测试专用）
+      - name: 温和版特征清理（不破坏编译）
         run: |
           cd frida
+          # 1. 修改默认端口
+          find . -name "*.c" -o -name "*.h" -o -name "*.vala" | xargs sed -i 's/27042/31337/g' 2>/dev/null || true
+          # 2. 全局名称混淆（温和版）
+          find . -name "*.c" -o -name "*.h" -o -name "*.vala" | xargs sed -i \
+            -e 's/"frida"/"system_service"/g' \
+            -e 's/"gum-/"/g' \
+            -e 's/frida_/sys_/g' \
+            -e 's/gum_/sys_/g' 2>/dev/null || true
+          # 3. 进程/线程名伪装
+          sed -i 's/"frida-server"/"surfaceflingerd"/g' ./frida-server/frida-server.c 2>/dev/null || true
+          sed -i 's/"gum-js-loop"/"system_work_thread"/g' ./frida-gum/gum/gum-thread.c 2>/dev/null || true
+          sed -i 's/"frida-thread"/"system_ui_thread"/g' ./frida-gum/gum/gum-thread.c 2>/dev/null || true
+          sed -i 's/"gmain"/"system_handler"/g' ./frida-gum/gum/gum-thread.c 2>/dev/null || true
+          sed -i 's/"gdbus"/"system_ipc"/g' ./frida-gum/gum/gum-thread.c 2>/dev/null || true
+          # 4. 关闭 RWX 特征
+          sed -i 's/GUM_PAGE_READ_WRITE_EXEC/GUM_PAGE_READ_WRITE/g' ./frida-gum/gum/gummemory.c 2>/dev/null || true
 
-          # 端口替换
-          grep -rl "27042" --include="*.c" --include="*.h" --include="*.vala" . | xargs sed -i 's/27042/31337/g'
-
-          # 全局名称混淆
-          grep -rl '"frida"' --include="*.c" --include="*.h" --include="*.vala" . | xargs sed -i 's/"frida"/"system_service"/g'
-          grep -rl '"gum-' --include="*.c" --include="*.h" . | xargs sed -i 's/"gum-/"/g'
-          grep -rl 'frida_' --include="*.c" --include="*.h" --include="*.vala" . | xargs sed -i 's/frida_/sys_/g'
-          grep -rl 'gum_' --include="*.c" --include="*.h" . | xargs sed -i 's/gum_/sys_/g'
-
-          # 进程名伪装
-          sed -i 's/"frida-server"/"surfaceflingerd"/g' ./frida-server/frida-server.c
-          sed -i 's/"gum-js-loop"/"system_work_thread"/g' ./frida-gum/gum/gum-thread.c
-          sed -i 's/"frida-thread"/"system_ui_thread"/g' ./frida-gum/gum/gum-thread.c
-          sed -i 's/"gmain"/"system_handler"/g' ./frida-gum/gum/gum-thread.c
-          sed -i 's/"gdbus"/"system_ipc"/g' ./frida-gum/gum/gum-thread.c
-
-          # 关闭 RWX 特征
-          sed -i 's/GUM_PAGE_READ_WRITE_EXEC/GUM_PAGE_READ_WRITE/g' ./frida-gum/gum/gummemory.c
-          sed -i 's/PROT_EXEC | PROT_WRITE/PROT_WRITE/g' ./frida-gum/gum/gummemory.c
-
-      - name: 编译配置优化
+      - name: 编译配置加固
         run: |
           cd frida
           find . -name meson.build | xargs sed -i '/^project/a \
-            add_global_arguments('-O2','-g0','-fvisibility=hidden','-fno-unwind-tables', language: 'c')
-          '
+            add_global_arguments("-O2", "-g0", "-fvisibility=hidden", "-fno-unwind-tables", language: "c")
+          ' 2>/dev/null || true
 
-      - name: 开始编译 android-arm64
+      - name: 编译 Android arm64 服务端
         run: |
           cd frida
           export CFLAGS="-O2 -g0 -fvisibility=hidden -fno-unwind-tables"
@@ -69,32 +66,27 @@ jobs:
           export LDFLAGS="-Wl,--gc-sections,-z,relro,-z,now"
           make server-android-arm64 -j$(nproc)
 
-      - name: 二进制清理
+      - name: 二进制清理与打包
         run: |
           cd frida
           SERVER=$(find build -name frida-server -type f | head -1)
           mkdir -p ../out
           strip --strip-all $SERVER
-          objcopy --strip-all --remove-section=.comment --remove-section=.note $SERVER
-          cp -v $SERVER ../out/frida-server
+          objcopy --remove-section=.comment --remove-section=.note $SERVER
+          cp $SERVER ../out/frida-server
 
-      - name: 手游防自杀 + 防检测脚本
+      - name: 生成手游反检测脚本
         run: |
           cat > out/anti_detect.js <<'EOF'
           setTimeout(function(){
               console.log("[+] 手游反检测模块加载");
-
-              // 防自杀
-              const suicide = ["exit", "exit_group", "kill", "raise"];
-              suicide.forEach(func => {
+              // 防自杀拦截
+              ["exit", "exit_group", "kill", "raise"].forEach(func => {
                   let addr = Module.findExportByName(null, func);
                   if (addr) {
-                      Interceptor.replace(addr, new NativeCallback(() => {
-                          return -1;
-                      }, 'int', []));
+                      Interceptor.replace(addr, new NativeCallback(() => { return -1; }, 'int', []));
                   }
               });
-
               // 拦截 /proc/pid/maps 检测
               ["open", "openat"].forEach(func => {
                   let addr = Module.findExportByName(null, func);
@@ -102,9 +94,7 @@ jobs:
                       Interceptor.attach(addr, {
                           onEnter(args) {
                               let path = args[func == "openat" ? 1 : 0].readCString();
-                              if (path && (path.indexOf("maps") != -1 || path.indexOf("status") != -1)) {
-                                  this.block = true;
-                              }
+                              if (path && (path.includes("maps") || path.includes("status"))) this.block = true;
                           },
                           onLeave(ret) {
                               if (this.block) ret.replace(-1);
@@ -112,30 +102,30 @@ jobs:
                       });
                   }
               });
-
               // 线程名净化
               let pthread_setname_np = Module.findExportByName(null, "pthread_setname_np");
               if (pthread_setname_np) {
                   Interceptor.attach(pthread_setname_np, {
                       onEnter(args) {
                           let name = args[1].readCString();
-                          if (name && name.match(/frida|gum|loop/gi)) {
+                          if (name && /frida|gum|loop/i.test(name)) {
                               args[1] = Memory.allocUtf8String("system_thread");
                           }
                       }
                   });
               }
-
               console.log("[+] 反检测启动完成");
           }, 500);
           EOF
 
-      - name: 打包
+      - name: 打包产物
         run: |
           cd out
           zip frida_1656_game_test.zip frida-server anti_detect.js
 
-      - uses: actions/upload-artifact@v4
+      - name: 上传编译产物
+        uses: actions/upload-artifact@v4
         with:
           name: frida-game-build
           path: out/frida_1656_game_test.zip
+          retention-days: 7
