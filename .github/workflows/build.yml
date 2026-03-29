@@ -164,7 +164,7 @@ jobs:
           echo "=== 查找编译产物 ==="
           
           # 多方案查找
-          SERVER_BIN=$(find build -name "frida-server" -type f 2>/dev/null | head -1)
+          SERVER_BIN=$(find build -path "*frida-core*server*" -name "frida-server" -type f 2>/dev/null | head -1)
           
           if [ -z "$SERVER_BIN" ]; then
             SERVER_BIN=$(find build -type f -executable 2>/dev/null | xargs file 2>/dev/null | grep "ELF.*ARM" | cut -d: -f1 | head -1)
