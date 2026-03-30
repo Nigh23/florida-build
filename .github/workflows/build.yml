@@ -106,7 +106,7 @@ jobs:
           
           echo "✓ 源码级混淆完成"
 
-      - name: 【第6步】编译（官方方式修复版）
+      - name: 【第6步】编译（官方方式修复版，确保 server 启用）
         run: |
           cd frida
           
@@ -114,11 +114,11 @@ jobs:
           make clean || true
           rm -rf build
           
-          echo "=== 强制开启 server ==="
-          sed -i 's/server\s*:\s*false/server : true/g' releng/meson/meson_options.txt || true
-          export FRIDA_FORCE_SERVER=1
+          echo "=== 设置编译参数 ==="
+          export FRIDA_HOST=android-arm64
+          export FRIDA_OPTIONS="-Dserver=enabled"
           
-          echo "=== 使用官方 toolchain 编译 ==="
+          echo "=== 使用官方 toolchain 编译 server ==="
           if make server-android-arm64 -j$(nproc) 2>&1 | tee build.log; then
             echo "✓ 编译成功"
           else
