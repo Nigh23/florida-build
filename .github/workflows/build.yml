@@ -1,4 +1,4 @@
-name: Build Frida 16.5.6 终极隐身版 (包名修复)
+name: Build Frida 16.5.6 终极隐身版 (标准编译方式)
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 【第0步】安装完整依赖（包名修复）
+      - name: 【第0步】安装完整依赖
         run: |
           echo "=== 安装完整编译环境 ==="
           sudo apt-get update
@@ -49,13 +49,12 @@ jobs:
           
           echo "=== 应用 Florida 补丁 ==="
           
-          # 只复制 frida-gum 目录中的文件
+          # 只复制补丁目录
           if [ -d ../florida/frida-gum ]; then
             echo "复制 frida-gum 补丁..."
             cp -rf ../florida/frida-gum/* frida-gum/ 2>/dev/null || true
           fi
           
-          # 只复制 frida-core 目录中的文件
           if [ -d ../florida/frida-core ]; then
             echo "复制 frida-core 补丁..."
             cp -rf ../florida/frida-core/* frida-core/ 2>/dev/null || true
@@ -66,10 +65,7 @@ jobs:
       - name: 【第3步】移除冲突模块
         run: |
           cd frida
-          
-          echo "=== 移除 frida-python ==="
           sed -i 's/^\(.*subproject.*frida-python.*\)$/#\1/' meson.build || true
-          
           echo "✓ 冲突模块移除完成"
 
       - name: 【第4步】源码级混淆（安全方式）
@@ -78,22 +74,13 @@ jobs:
           
           echo "=== 源码级混淆 ==="
           
-          # 混淆端口号（安全）
+          # 混淆端口号
           find . -name "*.c" -o -name "*.h" | xargs grep -l "27042" 2>/dev/null | while read f; do
             sed -i 's/27042/59999/g' "$f"
           done
           echo "✓ 端口号混淆"
           
-          # 混淆 Hook 相关字符串（有选择性）
-          GUM_INTERCEPTOR=$(find . -path "*/frida-gum/*" -name "guminterceptor.c" 2>/dev/null | head -1)
-          if [ -f "$GUM_INTERCEPTOR" ]; then
-            cp "$GUM_INTERCEPTOR" "${GUM_INTERCEPTOR}.bak"
-            sed -i 's/attached_listeners/registered_callbacks/g' "$GUM_INTERCEPTOR"
-            sed -i 's/listener_list/event_queue/g' "$GUM_INTERCEPTOR"
-            echo "✓ Hook 结构混淆"
-          fi
-          
-          # 混淆线程名（在特定文件中）
+          # 混淆线程名（只在特定文件）
           GUM_THREAD=$(find . -path "*/frida-gum/*" -name "gum-thread.c" 2>/dev/null | head -1)
           if [ -f "$GUM_THREAD" ]; then
             sed -i 's/"gum-js-loop"/"EventDispatcher"/g' "$GUM_THREAD"
@@ -101,7 +88,7 @@ jobs:
             echo "✓ 线程名混淆"
           fi
           
-          # 混淆库名（在特定文件中）
+          # 混淆库名（只在特定文件）
           GUM_ALLOC=$(find . -path "*/frida-gum/*" -name "gum-allocator.c" 2>/dev/null | head -1)
           if [ -f "$GUM_ALLOC" ]; then
             sed -i 's/"frida-agent"/"libart"/g' "$GUM_ALLOC"
@@ -111,23 +98,39 @@ jobs:
           
           echo "✓ 源码级混淆完成"
 
-      - name: 【第5步】编译（使用官方方式）
+      - name: 【第5步】编译（标准 Meson 方式）
         run: |
           cd frida
           
           echo "=== 开始编译 Android arm64 ==="
           echo ""
           
-          # 使用官方编译脚本
-          if python3 releng/build.py --host=android-arm64 server 2>&1 | tee build.log; then
-            echo ""
-            echo "✓✓✓ 编译成功！✓✓✓"
+          # 标准 Frida 编译方式
+          # 第 1 步: meson 配置 build 目录
+          if meson setup build \
+            -Dprefix=/usr/local \
+            -Ddefault_library=static \
+            -Doptimization=s \
+            -Db_ndebug=true \
+            -Dstrip=true \
+            2>&1 | tee meson-setup.log; then
+            
+            echo "✓ Meson 配置成功"
+            
+            # 第 2 步: 使用 ninja 编译
+            if ninja -C build server-android-arm64 2>&1 | tee ninja-build.log; then
+              echo ""
+              echo "✓✓✓ 编译成功！✓✓✓"
+            else
+              echo ""
+              echo "[!] Ninja 编译失败"
+              tail -100 ninja-build.log
+              exit 1
+            fi
           else
             echo ""
-            echo "[!] 编译失败"
-            echo ""
-            echo "【编译日志最后 200 行】"
-            tail -200 build.log
+            echo "[!] Meson 配置失败"
+            tail -100 meson-setup.log
             exit 1
           fi
 
@@ -138,16 +141,18 @@ jobs:
           echo "=== 查找编译产物 ==="
           
           # 查找 frida-server
-          SERVER_BIN=""
-          
-          # 方案 1: 标准路径
           SERVER_BIN=$(find . -name "frida-server" -type f 2>/dev/null | grep -v "\.git" | head -1)
           
           if [ -z "$SERVER_BIN" ]; then
+            # 备选：查找 ARM64 ELF 文件
+            SERVER_BIN=$(find build -type f -executable 2>/dev/null | xargs file 2>/dev/null | grep "ELF.*ARM aarch64" | cut -d: -f1 | head -1)
+          fi
+          
+          if [ -z "$SERVER_BIN" ] || [ ! -f "$SERVER_BIN" ]; then
             echo "[!] 未找到 frida-server"
             echo ""
-            echo "【查找所有 ELF 二进制】"
-            find . -type f -executable 2>/dev/null | xargs file 2>/dev/null | grep "ELF.*ARM" | head -10
+            echo "【查找所有文件】"
+            find build -type f -name "*server*" 2>/dev/null | head -20
             exit 1
           fi
           
@@ -264,52 +269,12 @@ jobs:
               } catch(e) {}
           }
           
-          function hookDebugAPIs() {
-              try {
-                  var ptrace = Module.findExportByName(null, "ptrace");
-                  if (ptrace) {
-                      Interceptor.attach(ptrace, {
-                          onLeave: function(retval) {
-                              retval.replace(-1);
-                          }
-                      });
-                  }
-              } catch(e) {}
-          }
-          
-          function hookJavaAPIs() {
-              try {
-                  Java.perform(function() {
-                      var ClassLoader = Java.use("java.lang.ClassLoader");
-                      ClassLoader.loadClass.overload('java.lang.String').implementation = function(className) {
-                          if (className.match(/frida|gum|xposed/i)) {
-                              throw new Error("Class not found");
-                          }
-                          return this.loadClass(className);
-                      };
-                      
-                      var File = Java.use("java.io.File");
-                      File.exists.implementation = function() {
-                          var path = this.getAbsolutePath();
-                          if (path && path.match(/frida|gum/i)) return false;
-                          return this.exists();
-                      };
-                  });
-              } catch(e) {}
-          }
-          
           function initialize() {
               console.log("[*] 启动运行时对抗系统...");
               hookProcessAPIs();
               hookFileSystemAPIs();
               hookThreadAPIs();
               hookMemoryAPIs();
-              hookDebugAPIs();
-              
-              if (Java.available) {
-                  hookJavaAPIs();
-              }
-              
               console.log("[✓] 对抗系统已激活");
           }
           
