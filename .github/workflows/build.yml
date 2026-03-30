@@ -20,6 +20,7 @@ jobs:
             git \
             curl \
             ninja-build \
+            meson \
             valac \
             libglib2.0-dev \
             libunwind-dev \
@@ -29,288 +30,138 @@ jobs:
             upx \
             zip \
             sed \
-            make
+            binutils-aarch64-linux-gnu
+          
           echo "✓ 依赖安装完成"
 
-      - name: 【第1步】升级 Meson 到所需版本
-        run: |
-          echo "=== 升级 Meson (要求 >=1.1.0) ==="
-          python3 -m pip install --upgrade pip
-          python3 -m pip install 'meson>=1.1.0'
-          echo "export PATH=\"$HOME/.local/bin:\$PATH\"" >> $GITHUB_ENV
-          echo "✓ Meson 升级完成"
-
-      - name: 【第2步】克隆源码
+      - name: 【第1步】克隆源码（完整子模块）
         run: |
           echo "=== 克隆 Frida 16.5.6 ==="
-          git clone --depth=1 --branch=16.5.6 --recursive \
-            https://github.com/frida/frida.git frida
+          git clone --depth=1 --branch=16.5.6 --recurse-submodules https://github.com/frida/frida.git frida
           
           echo "=== 克隆 Florida 16.5.6 ==="
-          git clone --depth=1 --branch=16.5.6 --recursive \
-            https://github.com/Ylarod/Florida.git florida
+          git clone --depth=1 --branch=16.5.6 --recursive https://github.com/Ylarod/Florida.git florida
 
-      - name: 【第3步】应用 Florida 补丁（安全方式）
+      - name: 【第2步】应用 Florida 补丁
         run: |
           cd frida
-          
           echo "=== 应用 Florida 补丁 ==="
-          
-          if [ -d ../florida/frida-gum ]; then
-            echo "复制 frida-gum 补丁..."
-            cp -rf ../florida/frida-gum/* frida-gum/ 2>/dev/null || true
-          fi
-          
-          if [ -d ../florida/frida-core ]; then
-            echo "复制 frida-core 补丁..."
-            cp -rf ../florida/frida-core/* frida-core/ 2>/dev/null || true
-          fi
-          
+          [ -d ../florida/frida-gum ] && cp -rf ../florida/frida-gum/* frida-gum/ 2>/dev/null
+          [ -d ../florida/frida-core ] && cp -rf ../florida/frida-core/* frida-core/ 2>/dev/null
           echo "✓ 补丁应用完成"
 
-      - name: 【第4步】移除冲突模块
+      - name: 【第3步】源码级隐身修改
         run: |
           cd frida
-          sed -i 's/^\(.*subproject.*frida-python.*\)$/#\1/' meson.build || true
-          echo "✓ 冲突模块移除完成"
+          echo "=== 端口/线程/名称混淆 ==="
+          
+          # 改默认端口 27042
+          find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.js" \) | xargs sed -i 's/27042/57777/g' 2>/dev/null
+          
+          # 线程名混淆
+          find ./frida-gum -name "*.c" | xargs sed -i 's/"gum-js-loop"/"system-work"/g' 2>/dev/null
+          find ./frida-gum -name "*.c" | xargs sed -i 's/"frida-thread"/"system-server"/g' 2>/dev/null
+          
+          # 特征字符串替换
+          find ./frida-gum ./frida-core -name "*.c" -o -name "*.h" | xargs sed -i 's/"frida-agent"/"libandroid_runtime"/g' 2>/dev/null
+          find ./frida-gum ./frida-core -name "*.c" -o -name "*.h" | xargs sed -i 's/"frida-jit"/"libgui"/g' 2>/dev/null
+          
+          echo "✓ 源码混淆完成"
 
-      - name: 【第5步】源码级混淆（安全方式）
+      - name: 【第4步】编译 Android arm64 核心配置
         run: |
           cd frida
+          echo "=== 配置 Android arm64 交叉编译 ==="
           
-          echo "=== 源码级混淆 ==="
-          
-          # 混淆端口号
-          find . -name "*.c" -o -name "*.h" | xargs grep -l "27042" 2>/dev/null | while read f; do
-            sed -i 's/27042/59999/g' "$f"
-          done
-          echo "✓ 端口号混淆"
-          
-          # 混淆线程名
-          GUM_THREAD=$(find . -path "*/frida-gum/*" -name "gum-thread.c" 2>/dev/null | head -1)
-          if [ -f "$GUM_THREAD" ]; then
-            sed -i 's/"gum-js-loop"/"EventDispatcher"/g' "$GUM_THREAD"
-            sed -i 's/"frida-thread"/"System_Server"/g' "$GUM_THREAD"
-            echo "✓ 线程名混淆"
-          fi
-          
-          # 混淆库名
-          GUM_ALLOC=$(find . -path "*/frida-gum/*" -name "gum-allocator.c" 2>/dev/null | head -1)
-          if [ -f "$GUM_ALLOC" ]; then
-            sed -i 's/"frida-agent"/"libart"/g' "$GUM_ALLOC"
-            sed -i 's/"frida-jit"/"libhwui"/g' "$GUM_ALLOC"
-            echo "✓ 库名混淆"
-          fi
-          
-          echo "✓ 源码级混淆完成"
-
-      - name: 【第6步】编译（使用 Meson + Ninja 直接构建 frida-server）
-        run: |
-          cd frida
-          
-          echo "=== 清理旧构建 ==="
-          make clean || true
-          rm -rf build
-          
-          echo "=== 配置构建（启用 server）==="
-          # 使用 Frida 自带的 toolchain 进行配置
-          export PATH="$HOME/.local/bin:$PATH"
-          # 关键：通过 meson 选项显式启用 server
-          if meson setup build \
-            -Dprefix=/usr/local \
+          # 关键：指定安卓交叉编译文件 + 开启 frida-server
+          meson setup build \
+            --cross-file=releng/meson/cross/android_arm64.txt \
             -Ddefault_library=static \
             -Doptimization=s \
             -Db_ndebug=true \
             -Dstrip=true \
-            -Dserver=enabled \
-            --cross-file=releng/meson/emulators/android-arm64.txt \
-            2>&1 | tee meson-setup.log; then
-            echo "✓ Meson 配置成功"
-          else
-            echo "[!] Meson 配置失败"
-            tail -100 meson-setup.log
-            exit 1
-          fi
-          
-          echo "=== 使用 Ninja 编译 frida-server ==="
-          if ninja -C build frida-server 2>&1 | tee ninja-build.log; then
-            echo "✓ 编译成功"
-          else
-            echo "[!] Ninja 编译失败"
-            tail -100 ninja-build.log
-            exit 1
-          fi
+            -Dserver=true \
+            -Dgadget=true \
+            -Dandroid=arm64 \
+            2>&1 | tee meson.log
 
-      - name: 【第7步】查找产物
+      - name: 【第5步】编译 frida-server
         run: |
           cd frida
+          echo "=== 开始 Ninja 编译 ==="
+          ninja -C build frida-server-android-arm64
+          echo "✓ 编译完成"
+
+      - name: 【第6步】提取产物
+        run: |
+          mkdir -p out
+          cd frida
           
-          echo "=== 查找编译产物 ==="
-          
-          # 查找 frida-server
-          SERVER_BIN=$(find build -name "frida-server" -type f 2>/dev/null | grep -v "\.git" | head -1)
-          
-          if [ -z "$SERVER_BIN" ]; then
+          SERVER=$(find build -name "frida-server" -type f | grep android-arm64 | head -1)
+          if [ -z "$SERVER" ] || [ ! -f "$SERVER" ]; then
             echo "[!] 未找到 frida-server"
-            echo ""
-            echo "【查找所有文件】"
-            find build -type f -name "*server*" 2>/dev/null | head -20
             exit 1
           fi
           
-          echo "✓ 找到: $SERVER_BIN"
-          file "$SERVER_BIN"
-          ls -lh "$SERVER_BIN"
-          
-          # 复制到输出目录
-          mkdir -p ../out
-          cp "$SERVER_BIN" ../out/frida-server-final
-          echo "✓ 已复制到输出目录"
+          cp -v "$SERVER" ../out/frida-server-16.5.6-ultimate
+          ls -lh ../out/
+          file ../out/frida-server-16.5.6-ultimate
 
-      - name: 【第8步】后编译混淆
-        run: |
-          cd frida
-          
-          echo "=== 后编译混淆 ==="
-          
-          if [ ! -f ../out/frida-server-final ]; then
-            echo "[!] 产物文件不存在"
-            exit 1
-          fi
-          
-          # 1. 字符串替换（二进制级）
-          echo "【1】二进制字符串替换..."
-          sed -i 's/27042/65535/g' ../out/frida-server-final 2>/dev/null || true
-          sed -i 's/frida/system/g' ../out/frida-server-final 2>/dev/null || true
-          sed -i 's/gum/lib/g' ../out/frida-server-final 2>/dev/null || true
-          echo "✓ 字符串替换完成"
-          
-          # 2. ELF 清理
-          echo "【2】ELF 清理..."
-          strip --strip-all ../out/frida-server-final 2>/dev/null || true
-          objcopy --remove-section=.comment \
-                  --remove-section=.note.gnu.build-id \
-                  ../out/frida-server-final 2>/dev/null || true
-          echo "✓ ELF 清理完成"
-          
-          # 3. UPX 压缩
-          echo "【3】UPX 压缩..."
-          upx --best --lzma ../out/frida-server-final 2>/dev/null && echo "✓ 压缩完成" || echo "⚠ 跳过"
-          
-          echo ""
-          echo "✓ 混淆完成"
-
-      - name: 【第9步】生成反检测脚本
-        run: |
-          cat > out/anti-detect-ultimate.js << 'EOF'
-          // Frida 运行时对抗脚本 v5.0
-          
-          function hookProcessAPIs() {
-              try {
-                  var prctl = Module.findExportByName(null, "prctl");
-                  if (prctl) {
-                      Interceptor.attach(prctl, {
-                          onEnter: function(args) {
-                              if (args[0].toInt32() === 15) {
-                                  args[1] = Memory.allocUtf8String("surfaceflinger");
-                              }
-                          }
-                      });
-                  }
-              } catch(e) {}
-          }
-          
-          function hookFileSystemAPIs() {
-              try {
-                  var open = Module.findExportByName(null, "open");
-                  if (open) {
-                      Interceptor.attach(open, {
-                          onEnter: function(args) {
-                              var path = args[0].readCString();
-                              if (path && path.match(/\/proc\/.*\/(maps|status|cmdline)/)) {
-                                  this.block = true;
-                              }
-                          },
-                          onLeave: function(retval) {
-                              if (this.block) retval.replace(-1);
-                          }
-                      });
-                  }
-              } catch(e) {}
-          }
-          
-          function hookThreadAPIs() {
-              try {
-                  var pthread_setname_np = Module.findExportByName(null, "pthread_setname_np");
-                  if (pthread_setname_np) {
-                      Interceptor.attach(pthread_setname_np, {
-                          onEnter: function(args) {
-                              var name = args[1].readCString();
-                              if (name && name.match(/gmain|gdbus|gum|frida/i)) {
-                                  args[1] = Memory.allocUtf8String("Thread_" + Math.random().toString(16).slice(2, 8));
-                              }
-                          }
-                      });
-                  }
-              } catch(e) {}
-          }
-          
-          function hookMemoryAPIs() {
-              try {
-                  var mmap = Module.findExportByName(null, "mmap");
-                  if (mmap) {
-                      Interceptor.attach(mmap, {
-                          onEnter: function(args) {
-                              var prot = args[2].toInt32();
-                              if ((prot & 7) === 7) {
-                                  args[2] = ptr(prot & ~4);
-                              }
-                          }
-                      });
-                  }
-              } catch(e) {}
-          }
-          
-          function initialize() {
-              console.log("[*] 启动运行时对抗系统...");
-              hookProcessAPIs();
-              hookFileSystemAPIs();
-              hookThreadAPIs();
-              hookMemoryAPIs();
-              console.log("[✓] 对抗系统已激活");
-          }
-          
-          setTimeout(initialize, 1000);
-          EOF
-          
-          echo "✓ 反检测脚本生成完成"
-
-      - name: 【第10步】最终打包
+      - name: 【第7步】ELF 精简 + 压缩
         run: |
           cd out
-          
-          echo "=== 最终打包 ==="
-          
-          if [ ! -f frida-server-final ]; then
-            echo "[!] 产物不存在"
-            exit 1
-          fi
-          
-          echo "【产物信息】"
-          file frida-server-final
-          ls -lh frida-server-final
-          
-          # 打包
-          zip -q frida-ultimate.zip frida-server-final anti-detect-ultimate.js
-          sha256sum frida-ultimate.zip > frida-ultimate.zip.sha256
-          
-          echo ""
-          echo "✓✓✓ 最终打包完成！✓✓✓"
-          ls -lh frida-ultimate.zip*
+          aarch64-linux-gnu-strip --strip-all frida-server-16.5.6-ultimate 2>/dev/null
+          upx --best --lzma frida-server-16.5.6-ultimate || echo "upx 跳过"
+
+      - name: 【第8步】生成反检测脚本
+        run: |
+          cat > out/anti-detect.js << 'EOF'
+          // Frida 终极反检测运行时
+          setTimeout(function(){
+              console.log("[*] 反检测模块加载中");
+              
+              // 隐藏线程名
+              var pthread_setname_np = Module.findExportByName(null, "pthread_setname_np");
+              if (pthread_setname_np) {
+                  Interceptor.attach(pthread_setname_np, {
+                      onEnter(args) {
+                          let name = args[1].readCString();
+                          if (name.match(/frida|gum|gmain|gdbus/i)) {
+                              args[1] = ptr(Memory.allocUtf8String("sys-" + Math.random().toString(16).substr(2,6)));
+                          }
+                      }
+                  });
+              }
+              
+              // 屏蔽 /proc 检测
+              var open = Module.findExportByName(null, "open");
+              if (open) {
+                  Interceptor.attach(open, {
+                      onEnter(args) {
+                          let p = args[0].readCString();
+                          if (p && p.includes("/proc/") && (p.includes("maps") || p.includes("status"))) {
+                              this.block = true;
+                          }
+                      },
+                      onLeave(ret) {
+                          if (this.block) ret.replace(-1);
+                      }
+                  });
+              }
+              
+              console.log("[✓] 反检测已激活");
+          }, 800);
+          EOF
+
+      - name: 打包
+        run: |
+          cd out
+          zip frida-ultimate-16.5.6.zip frida-server-16.5.6-ultimate anti-detect.js
+          ls -lh *.zip
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: frida-ultimate-build
-          path: out/frida-ultimate.zip*
+          name: frida-ultimate-16.5.6
+          path: out/*.zip
           retention-days: 30
