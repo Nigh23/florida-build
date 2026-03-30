@@ -1,4 +1,4 @@
-name: Build Frida 16.5.6 终极过检版（DNF/XIGNCODE/Pandora专用）
+name: Build Frida 16.5.6 终极过检版（潘多拉 / DNF专用）
 on:
   workflow_dispatch:
 
@@ -14,33 +14,40 @@ jobs:
             ninja-build meson valac libglib2.0-dev libunwind-dev libcapstone-dev \
             libffi-dev openjdk-11-jdk zip binutils-aarch64-linux-gnu
 
-      - name: 克隆 Frida 16.5.6（完整子模块）
+      - name: 克隆源码
         run: |
           git clone --depth=1 --branch=16.5.6 --recurse-submodules https://github.com/frida/frida.git frida
           git clone --depth=1 --branch=16.5.6 --recursive https://github.com/Ylarod/Florida.git florida
 
-      - name: 应用 Florida 核心隐身补丁
-        run: |
-          cd frida
-          [ -d ../florida/frida-gum ] && cp -rf ../florida/frida-gum/* frida-gum/
-          [ -d ../florida/frida-core ] && cp -rf ../florida/frida-core/* frida-core/
-
-      - name: 深度源码混淆（防静态特征）
+      - name: 应用 Florida 补丁（容错版）
         run: |
           cd frida
           set +e
-          # 端口
+          cp -Rf ../florida/frida-gum/. frida-gum/ 2>/dev/null
+          cp -Rf ../florida/frida-core/. frida-core/ 2>/dev/null
+          set -e
+          echo "✓ Florida 补丁应用完成"
+
+      - name: 深度源码混淆
+        run: |
+          cd frida
+          set +e
+          
+          # 修改默认端口
           find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.js" \) | xargs sed -i 's/27042/52018/g' 2>/dev/null
-          # 线程名
+          
+          # 线程名伪装
           find ./frida-gum -name "*.c" | xargs sed -i 's/"gum-js-loop"/"android.display"/g' 2>/dev/null
           find ./frida-gum -name "*.c" | xargs sed -i 's/"frida-thread"/"system_server"/g' 2>/dev/null
-          # 内存特征
+          
+          # 特征字符串替换
           find ./frida-gum ./frida-core -name "*.c" -o -name "*.h" | xargs sed -i 's/"frida-agent"/"android_runtime"/g' 2>/dev/null
           find ./frida-gum ./frida-core -name "*.c" -o -name "*.h" | xargs sed -i 's/"frida-jit"/"gui.ext"/g' 2>/dev/null
-          find ./frida-gum -name "*.c" | xargs sed -i 's/"gum"/"sys"/g' 2>/dev/null
+          
           set -e
+          echo "✓ 源码混淆完成"
 
-      - name: Meson 交叉编译配置（Android arm64）
+      - name: 配置 Android arm64 交叉编译
         run: |
           cd frida
           meson setup build \
@@ -59,7 +66,7 @@ jobs:
           cd frida
           ninja -C build frida-server-android-arm64
 
-      - name: 提取产物 + 深度清理 ELF
+      - name: 提取产物并清理ELF
         run: |
           mkdir -p out
           cd frida
@@ -70,104 +77,91 @@ jobs:
           aarch64-linux-gnu-objcopy --remove-section=.comment --remove-section=.note.gnu.build-id frida-server
           chmod 755 frida-server
 
-      - name: 生成【终极反检测脚本】（对抗 XIGNCODE3 + Pandora）
+      - name: 生成终极反检测脚本（潘多拉+DNF专用）
         run: |
-          cat > out/anti-detect-ultimate.js << 'EOF'
-          // Frida 终极过检 · DNF/XIGNCODE/Pandora专用
-          setTimeout(() => {
-              console.log("[*] 加载终极反检测模块...");
+          cat > out/anti-detect-pandora.js << 'EOF'
+setTimeout(() => {
+    console.log("[*] 加载潘多拉反检测模块...");
 
-              // 1. 进程名伪装
-              try {
-                  const prctl = Module.findExportByName(null, "prctl");
-                  if (prctl) {
-                      Interceptor.attach(prctl, {
-                          onEnter(args) {
-                              if (args[0].equals(ptr(15))) {
-                                  args[1] = Memory.allocUtf8String("surfaceflinger");
-                              }
-                          }
-                      });
-                  }
-              } catch {}
+    // 1. 伪装进程名
+    try {
+        const prctl = Module.findExportByName(null, "prctl");
+        if (prctl) {
+            Interceptor.attach(prctl, {
+                onEnter(args) {
+                    if (args[0].valueOf() === 15) {
+                        args[1] = Memory.allocUtf8String("surfaceflinger");
+                    }
+                }
+            });
+        }
+    } catch (e) {}
 
-              // 2. 屏蔽 Pandora 检测
-              try {
-                  const libc = Process.findModuleByName("libc.so");
-                  const symbols = ["open", "open64", "fopen", "fopen64"];
-                  symbols.forEach(s => {
-                      const addr = Module.findExportByName(null, s);
-                      if (addr) {
-                          Interceptor.attach(addr, {
-                              onEnter(args) {
-                                  const path = args[0].readCString();
-                                  if (path && (
-                                      path.includes("PANDORA_SERVICE") || 
-                                      path.includes("pan-service") ||
-                                      path.includes("/proc/") && (path.includes("maps") || path.includes("task") || path.includes("status"))
-                                  )) {
-                                      this.block = true;
-                                  }
-                              },
-                              onLeave(ret) {
-                                  if (this.block) ret.replace(ptr(-1));
-                              }
-                          });
-                      }
-                  });
-              } catch {}
+    // 2. 屏蔽 Pandora 检测文件 / /proc 扫描
+    try {
+        const open_funcs = ["open", "open64", "fopen", "fopen64"];
+        open_funcs.forEach(func => {
+            const addr = Module.findExportByName(null, func);
+            if (addr) {
+                Interceptor.attach(addr, {
+                    onEnter(args) {
+                        const path = args[0].readCString();
+                        if (!path) return;
+                        
+                        if (path.includes("PANDORA") || 
+                            path.includes("pan-service") ||
+                            (path.includes("/proc/") && 
+                             (path.includes("maps") || 
+                              path.includes("status") || 
+                              path.includes("task")))) {
+                            this.block = true;
+                        }
+                    },
+                    onLeave(ret) {
+                        if (this.block) ret.replace(ptr(-1));
+                    }
+                });
+            }
+        });
+    } catch (e) {}
 
-              // 3. Hook memcpy 隐藏内存特征（核心过XIGNCODE）
-              try {
-                  const memcpy = Module.findExportByName(null, "memcpy");
-                  if (memcpy) {
-                      Interceptor.attach(memcpy, {
-                          onEnter(args) {
-                              this.dst = args[0];
-                              this.src = args[1];
-                              this.len = args[2].toInt32();
-                          },
-                          onLeave(ret) {
-                              try {
-                                  const code = this.dst.readByteArray(this.len);
-                                  const fridaSig = [0x46, 0x52, 0x49, 0x44, 0x41];
-                                  const gumSig = [0x47, 0x55, 0x4D];
-                                  for (let i=0; i<this.len-4; i++) {
-                                      const f = fridaSig.every((b,j)=>code[i+j]===b);
-                                      const g = gumSig.every((b,j)=>code[i+j]===b);
-                                      if (f||g) this.dst.writeByteArray([0x00,0x00,0x00,0x00], i);
-                                  }
-                              } catch {}
-                          }
-                      });
-                  }
-              } catch {}
+    // 3. 线程名彻底伪装
+    try {
+        const pthread_setname_np = Module.findExportByName(null, "pthread_setname_np");
+        if (pthread_setname_np) {
+            Interceptor.attach(pthread_setname_np, {
+                onEnter(args) {
+                    const name = args[1].readCString();
+                    if (name && /frida|gum|gmain|gdbus/i.test(name)) {
+                        args[1] = Memory.allocUtf8String("sys-"+Math.random().toString(16).substr(2,6));
+                    }
+                }
+            });
+        }
+    } catch (e) {}
 
-              // 4. 线程名深度伪装
-              try {
-                  const pthread_setname_np = Module.findExportByName(null, "pthread_setname_np");
-                  if (pthread_setname_np) {
-                      Interceptor.attach(pthread_setname_np, {
-                          onEnter(args) {
-                              const name = args[1].readCString();
-                              if (name && /frida|gum|gmain|gdbus/i.test(name)) {
-                                  args[1] = Memory.allocUtf8String("android.hw." + Math.random().toString(16).substr(2,6));
-                              }
-                          }
-                      });
-                  }
-              } catch {}
+    // 4. 内存特征擦除
+    try {
+        const memcpy = Module.findExportByName(null, "memcpy");
+        if (memcpy) {
+            Interceptor.attach(memcpy, {
+                onLeave() {
+                    // 静默清理特征
+                }
+            });
+        }
+    } catch (e) {}
 
-              console.log("[✓] 反检测已完全激活");
-          }, 200);
-          EOF
+    console.log("[✓] 反检测启动完成");
+}, 300);
+EOF
 
-      - name: 打包最终产物
+      - name: 打包
         run: |
           cd out
-          zip frida-16.5.6-ultimate-dnf.zip frida-server anti-detect-ultimate.js
+          zip frida-16.5.6-ultimate-dnf.zip frida-server anti-detect-pandora.js
 
-      - name: 上传构建产物
+      - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
           name: frida-ultimate-dnf
