@@ -1,4 +1,4 @@
-name: Build Frida 16.5.6 终极过检版（潘多拉 / DNF专用）
+name: Build Frida 16.5.6 DNF专用去特征版
 on:
   workflow_dispatch:
 
@@ -8,44 +8,44 @@ jobs:
     steps:
       - name: 安装编译依赖
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential python3 python3-dev python3-pip pkg-config git curl \
-            ninja-build meson valac libglib2.0-dev libunwind-dev libcapstone-dev \
-            libffi-dev openjdk-11-jdk zip binutils-aarch64-linux-gnu
+          sudo apt update
+          sudo apt install -y \
+            build-essential python3 python3-pip git curl ninja-build meson \
+            valac libglib2.0-dev libunwind-dev libcapstone-dev libffi-dev \
+            openjdk-11-jdk zip binutils-aarch64-linux-gnu
 
       - name: 克隆源码
         run: |
-          git clone --depth=1 --branch=16.5.6 --recurse-submodules https://github.com/frida/frida.git frida
-          git clone --depth=1 --branch=16.5.6 --recursive https://github.com/Ylarod/Florida.git florida
+          git clone --depth=1 --branch 16.5.6 --recurse-submodules https://github.com/frida/frida.git frida
+          git clone --depth=1 --branch 16.5.6 https://github.com/Ylarod/Florida.git florida
 
-      - name: 应用 Florida 补丁（容错版）
+      - name: 应用 Florida 补丁
         run: |
           cd frida
           set +e
-          cp -Rf ../florida/frida-gum/. frida-gum/ 2>/dev/null
-          cp -Rf ../florida/frida-core/. frida-core/ 2>/dev/null
+          cp -Rf ../florida/frida-gum/. frida-gum/
+          cp -Rf ../florida/frida-core/. frida-core/
           set -e
-          echo "✓ Florida 补丁应用完成"
 
-      - name: 深度源码混淆
+      - name: DNF 专用去特征码（源码级）
         run: |
           cd frida
           set +e
           
-          # 修改默认端口
-          find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.js" \) | xargs sed -i 's/27042/52018/g' 2>/dev/null
+          # 改默认端口
+          find . -type f \( -name *.c -o -name *.h \) | xargs sed -i 's/27042/53221/g'
           
-          # 线程名伪装
-          find ./frida-gum -name "*.c" | xargs sed -i 's/"gum-js-loop"/"android.display"/g' 2>/dev/null
-          find ./frida-gum -name "*.c" | xargs sed -i 's/"frida-thread"/"system_server"/g' 2>/dev/null
+          # 清理线程名特征
+          find ./frida-gum -name "*.c" | xargs sed -i 's/"gum-js-loop"/"android.ui"/g'
+          find ./frida-gum -name "*.c" | xargs sed -i 's/"frida-thread"/"system-work"/g'
+          find ./frida-gum -name "*.c" | xargs sed -i 's/"gum"/"sys"/g'
           
-          # 特征字符串替换
-          find ./frida-gum ./frida-core -name "*.c" -o -name "*.h" | xargs sed -i 's/"frida-agent"/"android_runtime"/g' 2>/dev/null
-          find ./frida-gum ./frida-core -name "*.c" -o -name "*.h" | xargs sed -i 's/"frida-jit"/"gui.ext"/g' 2>/dev/null
+          # 清理模块名字符串
+          find ./frida-gum ./frida-core -type f \( -name *.c -o -name *.h \) | xargs sed -i 's/"frida-agent"/"libart"/g'
+          find ./frida-gum ./frida-core -type f \( -name *.c -o -name *.h \) | xargs sed -i 's/"frida-jit"/"libandroid"/g'
+          find ./frida-gum ./frida-core -type f \( -name *.c -o -name *.h \) | xargs sed -i 's/"frida"/"sys"/g'
           
           set -e
-          echo "✓ 源码混淆完成"
 
       - name: 配置 Android arm64 交叉编译
         run: |
@@ -66,104 +66,25 @@ jobs:
           cd frida
           ninja -C build frida-server-android-arm64
 
-      - name: 提取产物并清理ELF
+      - name: 提取并清理 ELF 符号
         run: |
           mkdir -p out
           cd frida
-          SERVER=$(find build -name "frida-server" | grep android-arm64 | head -1)
+          SERVER=$(find build -name frida-server | grep android-arm64 | head -1)
           cp "$SERVER" ../out/frida-server
           cd ../out
           aarch64-linux-gnu-strip --strip-all frida-server
           aarch64-linux-gnu-objcopy --remove-section=.comment --remove-section=.note.gnu.build-id frida-server
           chmod 755 frida-server
 
-      - name: 生成终极反检测脚本（潘多拉+DNF专用）
-        run: |
-          cat > out/anti-detect-pandora.js << 'EOF'
-setTimeout(() => {
-    console.log("[*] 加载潘多拉反检测模块...");
-
-    // 1. 伪装进程名
-    try {
-        const prctl = Module.findExportByName(null, "prctl");
-        if (prctl) {
-            Interceptor.attach(prctl, {
-                onEnter(args) {
-                    if (args[0].valueOf() === 15) {
-                        args[1] = Memory.allocUtf8String("surfaceflinger");
-                    }
-                }
-            });
-        }
-    } catch (e) {}
-
-    // 2. 屏蔽 Pandora 检测文件 / /proc 扫描
-    try {
-        const open_funcs = ["open", "open64", "fopen", "fopen64"];
-        open_funcs.forEach(func => {
-            const addr = Module.findExportByName(null, func);
-            if (addr) {
-                Interceptor.attach(addr, {
-                    onEnter(args) {
-                        const path = args[0].readCString();
-                        if (!path) return;
-                        
-                        if (path.includes("PANDORA") || 
-                            path.includes("pan-service") ||
-                            (path.includes("/proc/") && 
-                             (path.includes("maps") || 
-                              path.includes("status") || 
-                              path.includes("task")))) {
-                            this.block = true;
-                        }
-                    },
-                    onLeave(ret) {
-                        if (this.block) ret.replace(ptr(-1));
-                    }
-                });
-            }
-        });
-    } catch (e) {}
-
-    // 3. 线程名彻底伪装
-    try {
-        const pthread_setname_np = Module.findExportByName(null, "pthread_setname_np");
-        if (pthread_setname_np) {
-            Interceptor.attach(pthread_setname_np, {
-                onEnter(args) {
-                    const name = args[1].readCString();
-                    if (name && /frida|gum|gmain|gdbus/i.test(name)) {
-                        args[1] = Memory.allocUtf8String("sys-"+Math.random().toString(16).substr(2,6));
-                    }
-                }
-            });
-        }
-    } catch (e) {}
-
-    // 4. 内存特征擦除
-    try {
-        const memcpy = Module.findExportByName(null, "memcpy");
-        if (memcpy) {
-            Interceptor.attach(memcpy, {
-                onLeave() {
-                    // 静默清理特征
-                }
-            });
-        }
-    } catch (e) {}
-
-    console.log("[✓] 反检测启动完成");
-}, 300);
-EOF
-
       - name: 打包
         run: |
           cd out
-          zip frida-16.5.6-ultimate-dnf.zip frida-server anti-detect-pandora.js
+          zip frida-16.5.6-dnf-arm64.zip frida-server
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: frida-ultimate-dnf
-          path: out/frida-16.5.6-ultimate-dnf.zip
+          name: frida-server-dnf-arm64
+          path: out/frida-16.5.6-dnf-arm64.zip
           retention-days: 30
