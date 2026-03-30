@@ -30,7 +30,6 @@ jobs:
             zip \
             sed \
             make
-          
           echo "✓ 依赖安装完成"
 
       - name: 【第1步】升级 Meson 到所需版本
@@ -57,7 +56,6 @@ jobs:
           
           echo "=== 应用 Florida 补丁 ==="
           
-          # 只复制补丁目录
           if [ -d ../florida/frida-gum ]; then
             echo "复制 frida-gum 补丁..."
             cp -rf ../florida/frida-gum/* frida-gum/ 2>/dev/null || true
@@ -88,7 +86,7 @@ jobs:
           done
           echo "✓ 端口号混淆"
           
-          # 混淆线程名（只在特定文件）
+          # 混淆线程名
           GUM_THREAD=$(find . -path "*/frida-gum/*" -name "gum-thread.c" 2>/dev/null | head -1)
           if [ -f "$GUM_THREAD" ]; then
             sed -i 's/"gum-js-loop"/"EventDispatcher"/g' "$GUM_THREAD"
@@ -96,7 +94,7 @@ jobs:
             echo "✓ 线程名混淆"
           fi
           
-          # 混淆库名（只在特定文件）
+          # 混淆库名
           GUM_ALLOC=$(find . -path "*/frida-gum/*" -name "gum-allocator.c" 2>/dev/null | head -1)
           if [ -f "$GUM_ALLOC" ]; then
             sed -i 's/"frida-agent"/"libart"/g' "$GUM_ALLOC"
@@ -106,7 +104,7 @@ jobs:
           
           echo "✓ 源码级混淆完成"
 
-      - name: 【第6步】编译（官方方式修复版，确保 server 启用）
+      - name: 【第6步】编译（使用 Meson + Ninja 直接构建 frida-server）
         run: |
           cd frida
           
@@ -114,16 +112,32 @@ jobs:
           make clean || true
           rm -rf build
           
-          echo "=== 设置编译参数 ==="
-          export FRIDA_HOST=android-arm64
-          export FRIDA_OPTIONS="-Dserver=enabled"
+          echo "=== 配置构建（启用 server）==="
+          # 使用 Frida 自带的 toolchain 进行配置
+          export PATH="$HOME/.local/bin:$PATH"
+          # 关键：通过 meson 选项显式启用 server
+          if meson setup build \
+            -Dprefix=/usr/local \
+            -Ddefault_library=static \
+            -Doptimization=s \
+            -Db_ndebug=true \
+            -Dstrip=true \
+            -Dserver=enabled \
+            --cross-file=releng/meson/emulators/android-arm64.txt \
+            2>&1 | tee meson-setup.log; then
+            echo "✓ Meson 配置成功"
+          else
+            echo "[!] Meson 配置失败"
+            tail -100 meson-setup.log
+            exit 1
+          fi
           
-          echo "=== 使用官方 toolchain 编译 server ==="
-          if make server-android-arm64 -j$(nproc) 2>&1 | tee build.log; then
+          echo "=== 使用 Ninja 编译 frida-server ==="
+          if ninja -C build frida-server 2>&1 | tee ninja-build.log; then
             echo "✓ 编译成功"
           else
-            echo "[!] 编译失败"
-            tail -100 build.log
+            echo "[!] Ninja 编译失败"
+            tail -100 ninja-build.log
             exit 1
           fi
 
@@ -134,14 +148,9 @@ jobs:
           echo "=== 查找编译产物 ==="
           
           # 查找 frida-server
-          SERVER_BIN=$(find . -name "frida-server" -type f 2>/dev/null | grep -v "\.git" | head -1)
+          SERVER_BIN=$(find build -name "frida-server" -type f 2>/dev/null | grep -v "\.git" | head -1)
           
           if [ -z "$SERVER_BIN" ]; then
-            # 备选：查找 ARM64 ELF 文件
-            SERVER_BIN=$(find build -type f -executable 2>/dev/null | xargs file 2>/dev/null | grep "ELF.*ARM aarch64" | cut -d: -f1 | head -1)
-          fi
-          
-          if [ -z "$SERVER_BIN" ] || [ ! -f "$SERVER_BIN" ]; then
             echo "[!] 未找到 frida-server"
             echo ""
             echo "【查找所有文件】"
