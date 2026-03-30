@@ -20,7 +20,6 @@ jobs:
             git \
             curl \
             ninja-build \
-            meson \
             valac \
             libglib2.0-dev \
             libunwind-dev \
@@ -33,7 +32,15 @@ jobs:
           
           echo "✓ 依赖安装完成"
 
-      - name: 【第1步】克隆源码
+      - name: 【第1步】升级 Meson 到所需版本
+        run: |
+          echo "=== 升级 Meson (要求 >=1.1.0) ==="
+          python3 -m pip install --upgrade pip
+          python3 -m pip install 'meson>=1.1.0'
+          echo "export PATH=\"$HOME/.local/bin:\$PATH\"" >> $GITHUB_ENV
+          echo "✓ Meson 升级完成"
+
+      - name: 【第2步】克隆源码
         run: |
           echo "=== 克隆 Frida 16.5.6 ==="
           git clone --depth=1 --branch=16.5.6 --recursive \
@@ -43,7 +50,7 @@ jobs:
           git clone --depth=1 --branch=16.5.6 --recursive \
             https://github.com/Ylarod/Florida.git florida
 
-      - name: 【第2步】应用 Florida 补丁（安全方式）
+      - name: 【第3步】应用 Florida 补丁（安全方式）
         run: |
           cd frida
           
@@ -62,13 +69,13 @@ jobs:
           
           echo "✓ 补丁应用完成"
 
-      - name: 【第3步】移除冲突模块
+      - name: 【第4步】移除冲突模块
         run: |
           cd frida
           sed -i 's/^\(.*subproject.*frida-python.*\)$/#\1/' meson.build || true
           echo "✓ 冲突模块移除完成"
 
-      - name: 【第4步】源码级混淆（安全方式）
+      - name: 【第5步】源码级混淆（安全方式）
         run: |
           cd frida
           
@@ -98,15 +105,18 @@ jobs:
           
           echo "✓ 源码级混淆完成"
 
-      - name: 【第5步】编译（标准 Meson 方式）
+      - name: 【第6步】编译（标准 Meson 方式）
         run: |
           cd frida
           
           echo "=== 开始编译 Android arm64 ==="
           echo ""
           
-          # 标准 Frida 编译方式
+          # 确保 PATH 包含 ~/.local/bin（meson 新版本）
+          export PATH="$HOME/.local/bin:$PATH"
+          
           # 第 1 步: meson 配置 build 目录
+          set -o pipefail
           if meson setup build \
             -Dprefix=/usr/local \
             -Ddefault_library=static \
@@ -134,7 +144,7 @@ jobs:
             exit 1
           fi
 
-      - name: 【第6步】查找产物
+      - name: 【第7步】查找产物
         run: |
           cd frida
           
@@ -165,7 +175,7 @@ jobs:
           cp "$SERVER_BIN" ../out/frida-server-final
           echo "✓ 已复制到输出目录"
 
-      - name: 【第7步】后编译混淆
+      - name: 【第8步】后编译混淆
         run: |
           cd frida
           
@@ -198,7 +208,7 @@ jobs:
           echo ""
           echo "✓ 混淆完成"
 
-      - name: 【第8步】生成反检测脚本
+      - name: 【第9步】生成反检测脚本
         run: |
           cat > out/anti-detect-ultimate.js << 'EOF'
           // Frida 运行时对抗脚本 v5.0
@@ -283,7 +293,7 @@ jobs:
           
           echo "✓ 反检测脚本生成完成"
 
-      - name: 【第9步】最终打包
+      - name: 【第10步】最终打包
         run: |
           cd out
           
