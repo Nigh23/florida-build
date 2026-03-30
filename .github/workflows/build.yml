@@ -28,26 +28,39 @@ jobs:
           ref: 16.5.6
           path: florida
 
-      - name: 应用 Florida 隐身补丁
+      - name: 应用 Florida 补丁
         run: |
           cd frida
           cp -r ../florida/* . || true
 
-      - name: DNF 专用去特征码修改
+      - name: DNF 深度去特征码（精准路径版）
         run: |
           cd frida
           set +e
-          # 修改默认端口 27042
-          find . -type f \( -name "*.c" -o -name "*.h" \) | xargs sed -i 's/27042/53221/g' 2>/dev/null
-          # 替换线程特征
-          find ./frida-gum -name "*.c" | xargs sed -i 's/"gum-js-loop"/"android.ui"/g' 2>/dev/null
-          find ./frida-gum -name "*.c" | xargs sed -i 's/"frida-thread"/"system-work"/g' 2>/dev/null
-          # 替换库名字符串
-          find ./frida-gum ./frida-core -name "*.c" -o -name "*.h" | xargs sed -i 's/"frida-agent"/"libart"/g' 2>/dev/null
-          find ./frida-gum ./frida-core -name "*.c" -o -name "*.h" | xargs sed -i 's/"frida-jit"/"libandroid_runtime"/g' 2>/dev/null
+
+          # 修改端口
+          find . \( -name "*.c" -o -name "*.h" \) -type f \
+            | xargs sed -i 's/27042/53221/g' 2>/dev/null
+
+          # 线程特征（GUM）
+          find ./subprojects/frida-gum -name "*.c" -type f \
+            | xargs sed -i 's/"gum-js-loop"/"android.ui"/g' 2>/dev/null
+
+          find ./subprojects/frida-gum -name "*.c" -type f \
+            | xargs sed -i 's/"frida-thread"/"system-work"/g' 2>/dev/null
+
+          # 库名（GUM + CORE）
+          find ./subprojects/frida-gum ./subprojects/frida-core \
+            \( -name "*.c" -o -name "*.h" \) -type f \
+            | xargs sed -i 's/"frida-agent"/"libart"/g' 2>/dev/null
+
+          find ./subprojects/frida-gum ./subprojects/frida-core \
+            \( -name "*.c" -o -name "*.h" \) -type f \
+            | xargs sed -i 's/"frida-jit"/"libandroid_runtime"/g' 2>/dev/null
+
           set -e
 
-      - name: 编译 frida-server Android arm64
+      - name: 编译 frida-server android-arm64
         run: |
           cd frida
           make clean || true
@@ -55,24 +68,17 @@ jobs:
           export FRIDA_FORCE_SERVER=1
           make server-android-arm64 -j$(nproc)
 
-      - name: 提取并清理编译产物
+      - name: 提取产物
         run: |
           mkdir -p out
-          cd frida
-          SERVER=$(find build -name "frida-server" | grep android-arm64 | head -1)
-          cp "$SERVER" ../out/frida-server
-          cd ../out
-          aarch64-linux-gnu-strip --strip-all frida-server
-          chmod 755 frida-server
+          SERVER=$(find frida/build -name "frida-server" | grep android-arm64 | head -1)
+          cp "$SERVER" out/frida-server
+          aarch64-linux-gnu-strip --strip-all out/frida-server
+          chmod 755 out/frida-server
 
-      - name: 打包产物
-        run: |
-          cd out
-          zip frida-16.5.6-florida-dnf-arm64.zip frida-server
-
-      - name: 上传最终产物
+      - name: 打包上传
         uses: actions/upload-artifact@v4
         with:
-          name: frida-server-dnf-arm64
-          path: out/frida-16.5.6-florida-dnf-arm64.zip
+          name: frida-16.5.6-dnf-arm64
+          path: out/frida-server
           retention-days: 30
