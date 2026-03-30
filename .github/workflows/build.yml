@@ -28,7 +28,8 @@ jobs:
             openjdk-11-jdk \
             upx \
             zip \
-            sed
+            sed \
+            make
           
           echo "✓ 依赖安装完成"
 
@@ -105,42 +106,24 @@ jobs:
           
           echo "✓ 源码级混淆完成"
 
-      - name: 【第6步】编译（标准 Meson 方式）
+      - name: 【第6步】编译（官方方式修复版）
         run: |
           cd frida
           
-          echo "=== 开始编译 Android arm64 ==="
-          echo ""
+          echo "=== 清理旧构建 ==="
+          make clean || true
+          rm -rf build
           
-          # 确保 PATH 包含 ~/.local/bin（meson 新版本）
-          export PATH="$HOME/.local/bin:$PATH"
+          echo "=== 强制开启 server ==="
+          sed -i 's/server\s*:\s*false/server : true/g' releng/meson/meson_options.txt || true
+          export FRIDA_FORCE_SERVER=1
           
-          # 第 1 步: meson 配置 build 目录
-          set -o pipefail
-          if meson setup build \
-            -Dprefix=/usr/local \
-            -Ddefault_library=static \
-            -Doptimization=s \
-            -Db_ndebug=true \
-            -Dstrip=true \
-            2>&1 | tee meson-setup.log; then
-            
-            echo "✓ Meson 配置成功"
-            
-            # 第 2 步: 使用 ninja 编译
-            if ninja -C build server-android-arm64 2>&1 | tee ninja-build.log; then
-              echo ""
-              echo "✓✓✓ 编译成功！✓✓✓"
-            else
-              echo ""
-              echo "[!] Ninja 编译失败"
-              tail -100 ninja-build.log
-              exit 1
-            fi
+          echo "=== 使用官方 toolchain 编译 ==="
+          if make server-android-arm64 -j$(nproc) 2>&1 | tee build.log; then
+            echo "✓ 编译成功"
           else
-            echo ""
-            echo "[!] Meson 配置失败"
-            tail -100 meson-setup.log
+            echo "[!] 编译失败"
+            tail -100 build.log
             exit 1
           fi
 
