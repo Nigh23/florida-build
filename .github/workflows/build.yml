@@ -1,4 +1,4 @@
-name: Build Florida 16.5.6 DNF专用版
+name: Build Frida 16.5.6 Florida DNF专用版
 on:
   workflow_dispatch:
 
@@ -6,48 +6,73 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 安装依赖
+      - name: 安装编译依赖
         run: |
           sudo apt update
           sudo apt install -y build-essential python3 git curl ninja-build meson \
             valac libglib2.0-dev libunwind-dev libcapstone-dev libffi-dev \
             openjdk-11-jdk zip binutils-aarch64-linux-gnu
 
-      - name: 克隆 Florida 16.5.6
-        run: |
-          git clone --depth=1 -b 16.5.6 --recurse-submodules https://github.com/Ylarod/Florida.git
+      - name: 克隆 Frida 16.5.6
+        uses: actions/checkout@v4
+        with:
+          repository: frida/frida
+          ref: 16.5.6
+          submodules: recursive
+          path: frida
 
-      - name: DNF 去特征修改
+      - name: 克隆 Florida 16.5.6 补丁
+        uses: actions/checkout@v4
+        with:
+          repository: Ylarod/Florida
+          ref: 16.5.6
+          path: florida
+
+      - name: 应用 Florida 隐身补丁
         run: |
-          cd Florida
+          cd frida
+          cp -r ../florida/* . || true
+
+      - name: DNF 专用去特征码修改
+        run: |
+          cd frida
           set +e
+          # 修改默认端口 27042
           find . -type f \( -name "*.c" -o -name "*.h" \) | xargs sed -i 's/27042/53221/g' 2>/dev/null
-          find . -path "*/frida-gum/*" -name "*.c" | xargs sed -i 's/"gum-js-loop"/"android.ui"/g' 2>/dev/null
-          find . -path "*/frida-gum/*" -name "*.c" | xargs sed -i 's/"frida-thread"/"system-work"/g' 2>/dev/null
-          find . -path "*/frida-gum/*" -o -path "*/frida-core/*" | xargs sed -i 's/"frida-agent"/"libart"/g' 2>/dev/null
-          find . -path "*/frida-gum/*" -o -path "*/frida-core/*" | xargs sed -i 's/"frida-jit"/"libandroid_runtime"/g' 2>/dev/null
+          # 替换线程特征
+          find ./frida-gum -name "*.c" | xargs sed -i 's/"gum-js-loop"/"android.ui"/g' 2>/dev/null
+          find ./frida-gum -name "*.c" | xargs sed -i 's/"frida-thread"/"system-work"/g' 2>/dev/null
+          # 替换库名字符串
+          find ./frida-gum ./frida-core -name "*.c" -o -name "*.h" | xargs sed -i 's/"frida-agent"/"libart"/g' 2>/dev/null
+          find ./frida-gum ./frida-core -name "*.c" -o -name "*.h" | xargs sed -i 's/"frida-jit"/"libandroid_runtime"/g' 2>/dev/null
           set -e
 
-      - name: 编译 Android arm64
+      - name: 编译 frida-server Android arm64
         run: |
-          cd Florida
-          ./releng/build --android-arm64
+          cd frida
+          make clean || true
+          rm -rf build
+          export FRIDA_FORCE_SERVER=1
+          make server-android-arm64 -j$(nproc)
 
-      - name: 提取 frida-server
+      - name: 提取并清理编译产物
         run: |
           mkdir -p out
-          find Florida/build -name "frida-server" -type f | grep android-arm64 | head -1 | xargs cp -t out/
-          aarch64-linux-gnu-strip --strip-all out/frida-server
-          chmod 755 out/frida-server
+          cd frida
+          SERVER=$(find build -name "frida-server" | grep android-arm64 | head -1)
+          cp "$SERVER" ../out/frida-server
+          cd ../out
+          aarch64-linux-gnu-strip --strip-all frida-server
+          chmod 755 frida-server
 
-      - name: 打包
+      - name: 打包产物
         run: |
           cd out
-          zip florida-16.5.6-dnf-arm64.zip frida-server
+          zip frida-16.5.6-florida-dnf-arm64.zip frida-server
 
-      - name: 上传产物
+      - name: 上传最终产物
         uses: actions/upload-artifact@v4
         with:
-          name: florida-16.5.6-dnf-arm64
-          path: out/frida-server
+          name: frida-server-dnf-arm64
+          path: out/frida-16.5.6-florida-dnf-arm64.zip
           retention-days: 30
